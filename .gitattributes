@@ -1,0 +1,4 @@
+# 统一 LF 换行, 保证 shell 脚本与模块文件在 Android 上正常执行
+* text=auto eol=lf
+*.sh text eol=lf
+*.prop text eol=lf
