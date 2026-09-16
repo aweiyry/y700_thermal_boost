@@ -133,6 +133,9 @@ cd app
 作者：酷安@妲你小己吧 
 
 
+请我喝点小甜水可以扫描下面赞赏码，不强求，大家随意
+<img width="1206" height="1185" alt="IMG_3472(20251123-142501)" src="https://github.com/user-attachments/assets/6eb53662-b068-4d7f-9376-9de919fc2610" />
+
 
 
 小tips，有刷机救砖需要可以闲鱼搜索：专业刷机救砖  6级鱼小铺的就是我   提供专业价廉的服务
