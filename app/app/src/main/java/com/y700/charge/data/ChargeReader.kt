@@ -54,7 +54,7 @@ object ChargeReader {
         echo "INCUR $(cat /sys/class/power_supply/usb/current_now 2>/dev/null)"
         echo "INLIMIT $(cat /sys/class/power_supply/usb/input_current_limit 2>/dev/null)"
         echo "MODVER $(grep '^version=' /data/adb/modules/y700_thermal_boost/module.prop 2>/dev/null | cut -d= -f2)"
-        echo "MODRUN $(ps -A 2>/dev/null | grep -c 'y700_thermal_boost/service.sh')"
+        echo "MODRUN $(if grep -qa 'y700_thermal_boost/service.sh' /proc/$(cat /data/local/tmp/y700_thermal_boost.pid 2>/dev/null)/cmdline 2>/dev/null; then echo 1; else grep -la 'y700_thermal_boost/service.sh' /proc/[0-9]*/cmdline 2>/dev/null | head -1 | wc -l; fi)"
     """.trimIndent()
 
     fun read(): ChargeData {
