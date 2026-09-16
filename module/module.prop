@@ -1,6 +1,6 @@
 id=y700_thermal_boost
 name=Y700 统一温控增强+充电日志
-version=V6.3
-versionCode=24
+version=V6.4
+versionCode=25
 author=酷安@妲你小己吧&Cursor
-description=[温控优化][亮屏快充增强][充电日志] V6.3: 充电日志增加充电协议显示。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
+description=[温控优化][亮屏快充增强][充电日志] V6.4: 日志增加输入功率+修复协议显示。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。

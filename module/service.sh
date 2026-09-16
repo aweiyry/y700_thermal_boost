@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.3
+# Y700 Unified Thermal Boost + Charge Log - V6.4
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -19,6 +19,9 @@
 #   - 单实例锁校验 pid 所属进程(防 pid 复用导致偶发失效)
 # V6.3 新增:
 #   - 充电日志增加"充电协议"行 (PD/PPS/DCP/SCP等)
+# V6.4 新增:
+#   - 充电日志增加"输入功率"(区分充电器输入 vs 电池实得, 便于诊断边充边玩)
+#   - 修复充电协议在最终日志恒为"未识别"(改为充电期间捕获并留存)
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -61,6 +64,9 @@ CAPACITY_PATH="/sys/class/power_supply/battery/capacity"
 CCL_PATH="/sys/class/power_supply/battery/charge_control_limit"
 CCL_MAX_PATH="/sys/class/power_supply/battery/charge_control_limit_max"
 PROTOCOL_PATH="/sys/class/power_supply/usb/real_type"
+IN_VOLTAGE_PATH="/sys/class/power_supply/usb/voltage_now"
+IN_CURRENT_PATH="/sys/class/power_supply/usb/current_now"
+IN_LIMIT_PATH="/sys/class/power_supply/usb/input_current_limit"
 
 ENABLE_THERMAL_BYPASS=1
 ENABLE_CHARGE_LOG=1
@@ -205,7 +211,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.3 启动"
+log_me "$DEVICE_LABEL 统一模块 V6.4 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -252,7 +258,6 @@ log_me "* 监控启动 (${SAMPLE_INTERVAL}s)"
 flush_charging_log() {
     final=$1
     [ -z "$CHARGING_LOG_FILE" ] && return 0
-    PROTO=$(get_charge_protocol)
     [ $POWER_COUNT -eq 0 ] && [ "$final" != "1" ] && {
         {
             echo "=========================================="
@@ -260,9 +265,9 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.3"
+            echo "  模块版本:   V6.4"
             echo "  设备:       $DEVICE_LABEL"
-            echo "  充电协议:   $PROTO"
+            echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
             echo "  开始电量:   ${CHARGING_START_CAP}%"
             echo "  当前电量:   ${CAPACITY}%"
@@ -275,6 +280,11 @@ flush_charging_log() {
     [ $POWER_COUNT -eq 0 ] && return 0
     AVG_POWER=$(echo "$POWER_SUM $POWER_COUNT" | awk '{printf "%.1f", $1/$2}')
     AVG_TEMP=$(echo "$TEMP_SUM $TEMP_COUNT" | awk '{printf "%.1f", $1/$2}')
+    if [ "$IN_COUNT" -gt 0 ] 2>/dev/null; then
+        IN_AVG=$(echo "$IN_SUM $IN_COUNT" | awk '{printf "%.1f", $1/$2}')
+    else
+        IN_AVG=0
+    fi
     ELAPSED_MIN=$((SAMPLE_INTERVAL * POWER_COUNT / 60))
     CHARGED=$((CAPACITY - CHARGING_START_CAP))
     [ $CHARGED -lt 0 ] && CHARGED=0
@@ -288,9 +298,9 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.3"
+        echo "  模块版本:   V6.4"
         echo "  设备:       $DEVICE_LABEL"
-        echo "  充电协议:   $PROTO"
+        echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
         echo "  开始时间:   $CHARGING_START_TIME"
         if [ "$final" = "1" ]; then
@@ -309,8 +319,10 @@ flush_charging_log() {
         fi
         echo ""
         echo "【功率统计】"
-        echo "  峰值功率:   ${POWER_PEAK}W"
-        echo "  平均功率:   ${AVG_POWER}W"
+        echo "  电池峰值功率: ${POWER_PEAK}W"
+        echo "  电池平均功率: ${AVG_POWER}W"
+        echo "  输入峰值功率: ${IN_PEAK}W"
+        echo "  输入平均功率: ${IN_AVG}W"
         echo ""
         echo "【温度统计】"
         echo "  峰值温度:   ${TEMP_PEAK}C"
@@ -360,6 +372,10 @@ POWER_PEAK=0
 TEMP_SUM=0
 TEMP_COUNT=0
 TEMP_PEAK=0
+IN_SUM=0
+IN_COUNT=0
+IN_PEAK=0
+CHARGE_PROTOCOL="未识别"
 STAGE_DIR="$TMP_DIR/stages"
 mkdir -p "$STAGE_DIR"
 log_me "* 模块运行中"
@@ -371,7 +387,11 @@ while true; do
     CURRENT=$(cat "$CURRENT_PATH" 2>/dev/null)
     VOLTAGE=$(cat "$VOLTAGE_PATH" 2>/dev/null)
     TEMP_RAW=$(cat "$TEMP_PATH" 2>/dev/null)
+    IN_V=$(cat "$IN_VOLTAGE_PATH" 2>/dev/null)
+    IN_I=$(cat "$IN_CURRENT_PATH" 2>/dev/null)
+    IN_LIMIT=$(cat "$IN_LIMIT_PATH" 2>/dev/null)
     POWER_W=$(calc_power_w "$VOLTAGE" "$CURRENT")
+    IN_POWER_W=$(calc_power_w "$IN_V" "$IN_I")
     TEMP_C=$((${TEMP_RAW:-0} / 10))
     NOW=$(date '+%H:%M:%S')
 
@@ -382,6 +402,8 @@ while true; do
             CHARGING_LOG_FILE="$LOG_DIR/$(date '+%Y.%m.%d.%H.%M.%S').log"
             POWER_SUM=0; POWER_COUNT=0; POWER_PEAK=0
             TEMP_SUM=0; TEMP_COUNT=0; TEMP_PEAK=0
+            IN_SUM=0; IN_COUNT=0; IN_PEAK=0
+            CHARGE_PROTOCOL=$(get_charge_protocol)
             rm -f "$STAGE_DIR"/* "$STAGE_DIR"/*.raw 2>/dev/null
             log_me "* 充电开始 | ${CAPACITY}%"
             flush_charging_log 0
@@ -397,10 +419,18 @@ while true; do
         fi
 
         if [ "$STATUS" = "Charging" ]; then
+            # 更新充电协议(协商可能滞后, 只取有效值)
+            P=$(get_charge_protocol)
+            [ -n "$P" ] && [ "$P" != "未识别" ] && CHARGE_PROTOCOL="$P"
             if [ -n "$POWER_W" ] && [ "$POWER_W" != "0.0" ]; then
                 POWER_SUM=$(echo "$POWER_SUM $POWER_W" | awk '{printf "%.1f", $1+$2}')
                 POWER_COUNT=$((POWER_COUNT + 1))
                 [ "$(echo "$POWER_W $POWER_PEAK" | awk '{print ($1>$2)}')" = "1" ] && POWER_PEAK=$POWER_W
+            fi
+            if [ -n "$IN_POWER_W" ] && [ "$IN_POWER_W" != "0.0" ]; then
+                IN_SUM=$(echo "$IN_SUM $IN_POWER_W" | awk '{printf "%.1f", $1+$2}')
+                IN_COUNT=$((IN_COUNT + 1))
+                [ "$(echo "$IN_POWER_W $IN_PEAK" | awk '{print ($1>$2)}')" = "1" ] && IN_PEAK=$IN_POWER_W
             fi
             if [ $TEMP_C -gt 0 ] && [ $TEMP_C -lt 100 ]; then
                 TEMP_SUM=$((TEMP_SUM + TEMP_C))
