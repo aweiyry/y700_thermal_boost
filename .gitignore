@@ -1,5 +1,14 @@
 # 构建产物 (由 module/ 目录打包生成, 不入库)
 *.zip
+*.apk
+*.log
+
+# Android 应用构建产物
+app/.gradle/
+app/build/
+app/app/build/
+app/.kotlin/
+app/local.properties
 
 # 系统/编辑器
 .DS_Store
