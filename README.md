@@ -29,7 +29,7 @@
 
 ### 安装
 
-1. 用 `module/` 目录打包成 zip（或从 Release 下载）
+1. 从 **[Releases](https://github.com/aweiyry/y700_thermal_boost/releases)** 下载 `y700_thermal_boost_vX.X.zip`（或用 `module/` 目录自行打包）
 2. 通过 Magisk 或 KernelSU 刷入
 3. 重启
 
@@ -78,7 +78,7 @@ cd app
 
 ### 使用
 
-1. 安装 APK
+1. 从 **[Releases](https://github.com/aweiyry/y700_thermal_boost/releases)** 下载 `y700_charge_monitor_vX.X.apk` 并安装
 2. 打开 App，首次会弹 KernelSU/Magisk root 授权，点「允许」
 3. 即可看到实时充电信息，右上角「历史记录」查看每次充电存档
 
