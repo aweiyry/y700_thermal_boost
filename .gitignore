@@ -3,6 +3,12 @@
 *.apk
 *.log
 
+# 临时诊断/调试文件
+deploy*.sh
+diag_report.txt
+v_*.log
+log[0-9]*.txt
+
 # Android 应用构建产物
 app/.gradle/
 app/build/
