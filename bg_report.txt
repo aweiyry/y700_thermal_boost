@@ -1,0 +1,204 @@
+============================================================
+        Y700 温控模块 诊断报告
+============================================================
+生成时间: 2026-09-17 09:00:53
+采样时长: 1200 秒
+
+【1】环境信息
+  设备型号:   TB323FU
+  Android:    16 (SDK 36)
+  内核:       6.12.30-android16-5-g1750f757fabe-ab13938768-4k
+  Root:       已获取(uid=0)
+  SELinux:    Enforcing
+  当前上下文: u:r:ksu:s0
+  机型识别:   五代 (TB323FU)
+
+【2】模块安装状态
+  模块目录:   存在
+  版本:       V6.5
+  service.sh: 存在
+  config.prop:存在
+  启用状态:   已启用
+  service.d:  存在
+  温控开关:   ENABLE_THERMAL_BYPASS=1
+  伪装温度:   CHG=25000 BATT=28000 USB=25000 AP=30000 (毫摄氏度)
+
+【3】模块服务进程
+  运行中 pid=7755  状态=S
+  锁文件 pid: 7755
+
+【4】温区检查 (核心)
+  --- 设备上实际存在的全部温区 ---
+  cpullc-0-0 cpullc-0-1 cpu-0-2-1 sdr0 mmw_ific0 mmw0 mmw1 mmw2 mmw3 cpu-0-3-0 cpu-0-3-1 cpu-0-4-0 cpu-0-4-1 cpu-0-5-0 cpu-0-5-1 cpullc-1-0 cpullc-1-1 qmx-1-0 qmx-0-0 qmx-1-1 qmx-1-2 qmx-1-3 qmx-1-4 cpu-1-0-0 cpu-1-0-1 cpu-1-1-0 cpu-1-1-1 nsphvx-0 nsphvx-1 qmx-0-1 nsphvx-2 nsphvx-3 nsphmx-0 nsphmx-1 nsphmx-2 nsphmx-3 gpuss-0 gpuss-1 gpuss-2 gpuss-3 qmx-0-2 gpuss-4 gpuss-5 gpuss-6 gpuss-7 gpuss-8 gpuss-9 gpuss-10 ddr mdmss-0 mdmss-1 cpu-0-0-0 mdmss-2 mdmss-3 camera-0 camera-1 video cpu-hw-trip-0 socd pmh0101-bcl-lvl0 cpu-hw-trip-1 pmh0104_tz cpu-0-0-1 front_temp xo-therm pmh0101-bcl-lvl1 pmr735d_tz back_temp fast-chg-therm pmh0101-bcl-lvl2 user_temp batt-pack-therm vbat cpu-0-1-0 usb user_front_temp usb1-conn-therm pmih010x-ibat-lvl0 user_back_temp wireless pmih010x-ibat-lvl1 battery pmih010x-bcl-lvl0 batt2-pack-therm cpu-0-1-1 pmih010x-bcl-lvl1 top-chg-therm pmih010x-bcl-lvl2 ap-therm flash-led-ntc wlan-therm usb2-conn-therm rear-cam-ntc quiet-therm ufs-therm cpu-0-2-0 fcam-ntc lcm-thermal pmh0101_tz pmh0110_d_tz pmh0110_f_tz pmh0110_g_tz pmh0110_i_tz pmih010x_tz pmih010x_lite_tz sdr0_pa 
+
+  --- 模块目标温区 ---
+  温区               mode   temp     期望   结论
+  fast-chg-therm       disabled 25000    25000    正常(已禁用+伪装)
+  top-chg-therm        disabled 25000    25000    正常(已禁用+伪装)
+  usb                  disabled 25000    25000    正常(已禁用+伪装)
+  usb1-conn-therm      disabled 25000    25000    正常(已禁用+伪装)
+  usb2-conn-therm      disabled 25000    25000    正常(已禁用+伪装)
+  ap-therm             disabled 30000    30000    正常(已禁用+伪装)
+  lcm-thermal          disabled 30000    30000    正常(已禁用+伪装)
+  battery              enabled 28000    28000    正常(已伪装)
+  quiet-therm          enabled 28000    28000    正常(已伪装)
+  batt-pack-therm      enabled 28000    28000    正常(已伪装)
+  batt2-pack-therm     enabled 28000    28000    正常(已伪装)
+  batt1-therm          -      -        28000    未找到(本机型无此温区)
+  batt2-therm          -      -        28000    未找到(本机型无此温区)
+
+  小结: 命中 11 个, 本机无 2 个, 未生效 0 个
+
+【5】写入权限测试
+  emul_temp 可写: 是
+  mode 可写: 是
+
+【6】温控进程
+  root         10501     1   14001972  10172 __arm64_sys_rt_sigsuspend 0 S thermal-engine-v2
+  root         10506     1   10912212   6876 binder_thread_read  0 S android.hardware.thermal-service.qti
+
+【7】充电状态与输入电流节点
+  状态:       Charging   电量: 75%
+  电池:       4150000 uV / 550000 uA / 339 (0.1C)
+  协议:       SDP
+  输入电压:   4980000 uV
+  输入电流:   497000 uA (PPS 下可能恒为 0)
+  充电阶段:   Fast
+  CCL:        12400000/12400000
+  --- IIO 输入电流节点 ---
+  in_current_smb1501_1_iin_input = 
+  in_current_smb1501_2_iin_input = 
+  in_current_pmih010x_iin_input = 497740
+  in_current_smb1501_1_ichg_input = 
+  in_current_smb1501_2_ichg_input = 
+
+【8】动态采样 (每 5 秒, 共 1200 秒)
+  时间     状态       协议    电量  电池功率  iin(pmih)  iin(smb1)  iin(smb2)  usb_i  伪装维持
+  09:01:01  Charging  SDP  75%  2.2W  498956  空  空  497000  是
+  09:01:06  Charging  SDP  75%  0.8W  498553  空  空  497000  是
+  09:01:12  Charging  SDP  75%  1.1W  496525  空  空  497000  是
+  09:01:17  Charging  SDP  75%  0.3W  497334  空  空  497000  是
+  09:01:22  Charging  SDP  75%  0.7W  497537  空  空  497000  是
+  09:01:27  Charging  SDP  75%  0.3W  498146  空  空  497000  是
+  09:01:33  Charging  SDP  75%  1.0W  495915  空  空  497000  是
+  09:01:38  Charging  SDP  75%  0.3W  498350  空  空  497000  是
+  09:01:43  Charging  SDP  75%  0.8W  497537  空  空  497000  是
+  09:01:48  Charging  SDP  75%  1.1W  497943  空  空  497000  是
+  09:01:54  Charging  SDP  75%  0.0W  496931  空  空  497000  是
+  09:01:59  Charging  SDP  75%  0.3W  494496  空  空  497000  是
+  09:02:04  Charging  SDP  75%  0.5W  497537  空  空  497000  是
+  09:02:09  Charging  SDP  75%  0.2W  497740  空  空  497000  是
+  09:02:15  Charging  SDP  75%  0.9W  497740  空  空  497000  是
+  09:02:20  Charging  SDP  75%  0.4W  497740  空  空  500000  是
+  09:02:25  Charging  SDP  75%  0.0W  497134  空  空  497000  是
+  09:02:31  Charging  SDP  75%  0.3W  497740  空  空  497000  是
+  09:02:36  Charging  SDP  75%  0.0W  495309  空  空  497000  是
+  09:02:41  Charging  SDP  75%  3.1W  497134  空  空  500000  是
+  09:02:46  Charging  SDP  75%  1.5W  496321  空  空  497000  是
+  09:02:52  Discharging  Unknown  75%  2.2W  1012  空  空  0  否(35771)
+  09:02:57  Charging  PD_PPS  75%  1.9W  0  空  空  0  是
+  09:03:02  Charging  PD_PPS  75%  8.9W  -606  空  空  0  是
+  09:03:07  Charging  PD_PPS  75%  17.6W  -606  空  空  0  是
+  09:03:13  Charging  PD_PPS  75%  23.8W  -200  空  空  0  是
+  09:03:18  Charging  PD_PPS  75%  26.0W  -403  空  空  0  是
+  09:03:23  Charging  PD_PPS  76%  33.0W  0  空  空  0  是
+  09:03:28  Charging  PD_PPS  76%  37.0W  -1012  空  空  0  是
+  09:03:33  Charging  PD_PPS  76%  41.0W  -1418  空  空  0  是
+  09:03:39  Charging  PD_PPS  76%  44.0W  -809  空  空  0  是
+  09:03:44  Charging  PD_PPS  76%  48.6W  -1215  空  空  0  是
+  09:03:49  Charging  PD_PPS  76%  46.6W  -1012  空  空  0  是
+  09:03:55  Charging  PD_PPS  77%  48.2W  -1621  空  空  0  是
+  09:04:00  Charging  PD_PPS  77%  47.4W  -1621  空  空  0  是
+  09:04:05  Charging  PD_PPS  77%  46.8W  0  空  空  0  是
+  09:04:10  Charging  PD_PPS  77%  48.4W  -809  空  空  0  是
+  09:04:16  Charging  PD_PPS  77%  49.4W  0  空  空  0  是
+  09:04:21  Charging  PD_PPS  78%  49.2W  0  空  空  0  是
+  09:04:26  Charging  PD_PPS  78%  50.2W  -1215  空  空  0  是
+  09:04:32  Charging  PD_PPS  78%  50.9W  0  空  空  0  是
+  09:04:37  Charging  PD_PPS  78%  50.5W  0  空  空  0  是
+  09:04:42  Charging  PD_PPS  78%  50.6W  200  空  空  0  是
+  09:04:47  Charging  PD_PPS  79%  51.0W  403  空  空  0  是
+  09:04:53  Charging  PD_PPS  79%  51.3W  809  空  空  0  是
+  09:04:58  Charging  PD_PPS  79%  51.1W  -200  空  空  0  是
+  09:05:03  Charging  PD_PPS  79%  51.3W  403  空  空  0  是
+  09:05:08  Charging  PD_PPS  79%  51.1W  0  空  空  0  是
+  09:05:14  Charging  PD_PPS  80%  50.8W  606  空  空  0  是
+  09:05:19  Charging  PD_PPS  80%  49.2W  809  空  空  0  是
+  09:05:24  Charging  PD_PPS  80%  46.7W  809  空  空  0  是
+  09:05:29  Charging  PD_PPS  80%  43.9W  403  空  空  0  是
+  09:05:35  Charging  PD_PPS  80%  42.1W  200  空  空  0  是
+  09:05:40  Charging  PD_PPS  80%  39.2W  200  空  空  0  是
+  09:05:45  Charging  PD_PPS  80%  37.4W  0  空  空  0  是
+  09:05:50  Charging  PD_PPS  81%  36.6W  403  空  空  0  是
+  09:05:56  Charging  PD_PPS  81%  35.0W  1215  空  空  0  是
+  09:06:01  Charging  PD_PPS  81%  37.0W  0  空  空  0  是
+  09:06:06  Charging  PD_PPS  81%  37.3W  809  空  空  0  是
+  09:06:12  Charging  PD_PPS  81%  37.0W  0  空  空  0  是
+  09:06:17  Charging  PD_PPS  81%  36.9W  -606  空  空  0  是
+  09:06:22  Charging  PD_PPS  81%  37.1W  -1418  空  空  0  是
+  09:06:27  Charging  PD_PPS  82%  35.1W  -1215  空  空  0  是
+  09:06:33  Charging  PD_PPS  82%  37.9W  0  空  空  0  是
+  09:06:38  Charging  PD_PPS  82%  36.9W  200  空  空  0  是
+  09:06:43  Charging  PD_PPS  82%  36.6W  0  空  空  0  是
+  09:06:48  Charging  PD_PPS  82%  37.4W  -200  空  空  0  是
+  09:06:54  Charging  PD_PPS  82%  38.0W  0  空  空  0  是
+  09:06:59  Charging  PD_PPS  82%  36.8W  -403  空  空  0  是
+  09:07:04  Charging  PD_PPS  83%  35.0W  -403  空  空  0  是
+  09:07:10  Charging  PD_PPS  83%  37.5W  0  空  空  0  是
+  09:07:15  Charging  PD_PPS  83%  37.4W  0  空  空  0  是
+  09:07:20  Charging  PD_PPS  83%  36.2W  -403  空  空  0  是
+  09:07:25  Charging  PD_PPS  83%  37.6W  -200  空  空  0  是
+  09:07:31  Charging  PD_PPS  83%  36.6W  200  空  空  0  是
+  09:07:36  Charging  PD_PPS  83%  36.8W  200  空  空  0  是
+  09:07:41  Charging  PD_PPS  84%  36.9W  809  空  空  0  是
+  09:07:46  Charging  PD_PPS  84%  37.4W  200  空  空  0  是
+  09:07:52  Charging  PD_PPS  84%  36.7W  809  空  空  0  是
+  09:07:57  Charging  PD_PPS  84%  36.8W  200  空  空  0  是
+  09:08:02  Charging  PD_PPS  84%  36.8W  403  空  空  0  是
+  09:08:07  Charging  PD_PPS  84%  37.3W  -606  空  空  0  是
+  09:08:13  Charging  PD_PPS  84%  37.3W  809  空  空  0  是
+  09:08:18  Charging  PD_PPS  85%  35.4W  -403  空  空  0  是
+  09:08:23  Charging  PD_PPS  85%  37.5W  200  空  空  0  是
+  09:08:28  Charging  PD_PPS  85%  37.2W  -606  空  空  0  是
+  09:08:34  Charging  PD_PPS  85%  37.4W  -606  空  空  0  是
+  09:08:39  Charging  PD_PPS  85%  37.3W  0  空  空  0  是
+  09:08:44  Charging  PD_PPS  85%  37.7W  -606  空  空  0  是
+  09:08:49  Charging  PD_PPS  85%  36.9W  -200  空  空  0  是
+  09:08:55  Charging  PD_PPS  86%  37.2W  0  空  空  0  是
+  09:09:00  Charging  PD_PPS  86%  36.8W  200  空  空  0  是
+  09:09:05  Charging  PD_PPS  86%  37.7W  403  空  空  0  是
+  09:09:11  Charging  PD_PPS  86%  37.3W  0  空  空  0  是
+  09:09:16  Charging  PD_PPS  86%  37.2W  -606  空  空  0  是
+  09:09:21  Charging  PD_PPS  86%  37.1W  -606  空  空  0  是
+  09:09:26  Charging  PD_PPS  86%  37.7W  0  空  空  0  是
+  09:09:32  Charging  PD_PPS  86%  38.1W  0  空  空  0  是
+  09:09:37  Charging  PD_PPS  87%  37.3W  0  空  空  0  是
+  09:09:42  Charging  PD_PPS  87%  37.2W  -606  空  空  0  是
+  09:09:47  Charging  PD_PPS  87%  37.3W  -200  空  空  0  是
+  09:09:53  Charging  PD_PPS  87%  37.7W  0  空  空  0  是
+  09:09:58  Charging  PD_PPS  87%  37.0W  -403  空  空  0  是
+  09:10:03  Charging  PD_PPS  87%  34.7W  200  空  空  0  是
+  09:10:09  Charging  PD_PPS  87%  37.5W  -403  空  空  0  是
+  09:10:14  Charging  PD_PPS  88%  37.2W  0  空  空  0  是
+  09:10:19  Charging  PD_PPS  88%  37.6W  0  空  空  0  是
+  09:10:24  Charging  PD_PPS  88%  37.4W  -403  空  空  0  是
+  09:10:30  Charging  PD_PPS  88%  37.0W  -403  空  空  0  是
+  09:10:35  Charging  PD_PPS  88%  33.8W  403  空  空  0  是
+  09:10:40  Charging  PD_PPS  88%  32.3W  809  空  空  0  是
+  09:10:45  Charging  PD_PPS  88%  29.0W  -200  空  空  0  是
+  09:10:51  Charging  PD_PPS  88%  29.2W  403  空  空  0  是
+  09:10:56  Charging  PD_PPS  89%  29.4W  0  空  空  0  是
+  09:11:01  Charging  SDP  89%  2.1W  47237  空  空  47000  是
+  09:11:06  Charging  SDP  89%  0.4W  498553  空  空  497000  是
+  09:11:12  Charging  SDP  89%  0.1W  499362  空  空  500000  是
+  09:11:17  Charging  SDP  89%  0.1W  499971  空  空  500000  是
+  09:11:22  Charging  SDP  89%  0.2W  497537  空  空  497000  是
+  09:11:27  Charging  SDP  89%  0.2W  497134  空  空  497000  是
+  09:11:33  Charging  SDP  89%  0.1W  496525  空  空  497000  是
+  09:11:38  Charging  SDP  89%  0.1W  497943  空  空  497000  是
+  09:11:43  Charging  SDP  89%  0.3W  497943  空  空  497000  是
+  09:11:48  Charging  SDP  89%  0.0W  498350  空  空  497000  是
+  09:11:54  Charging  SDP  89%  0.0W  500378  空  空  500000  是
+  09:11:59  Charging  SDP  89%  0.1W  497537  空  空  497000  是
+  09:12:04  Charging  SDP  89%  0.7W  497537  空  空  497000  是
+  09:12:10  Charging  SDP  89%  0.2W  498146  空  空  500000  是

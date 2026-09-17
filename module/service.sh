@@ -357,7 +357,8 @@ flush_charging_log() {
             echo "  输入峰值功率: ${IN_PEAK}W"
             echo "  输入平均功率: ${IN_AVG}W"
         else
-            echo "  输入功率:   不可读(本次未采集到有效输入电流)"
+            echo "  输入功率:   不可读(PPS快充下平台不提供输入电流)"
+            [ "${IN_V_PEAK:-0}" -gt 0 ] 2>/dev/null && echo "  输入电压峰值: $(awk "BEGIN{printf \"%.2f\", $IN_V_PEAK/1000000}")V (PPS档位)"
         fi
         echo ""
         echo "【温度统计】"
@@ -411,6 +412,7 @@ TEMP_PEAK=0
 IN_SUM=0
 IN_COUNT=0
 IN_PEAK=0
+IN_V_PEAK=0
 CHARGE_PROTOCOL="未识别"
 STAGE_DIR="$TMP_DIR/stages"
 mkdir -p "$STAGE_DIR"
@@ -438,7 +440,7 @@ while true; do
             CHARGING_LOG_FILE="$LOG_DIR/$(date '+%Y.%m.%d.%H.%M.%S').log"
             POWER_SUM=0; POWER_COUNT=0; POWER_PEAK=0
             TEMP_SUM=0; TEMP_COUNT=0; TEMP_PEAK=0
-            IN_SUM=0; IN_COUNT=0; IN_PEAK=0
+            IN_SUM=0; IN_COUNT=0; IN_PEAK=0; IN_V_PEAK=0
             CHARGE_PROTOCOL=$(get_charge_protocol)
             rm -f "$STAGE_DIR"/* "$STAGE_DIR"/*.raw 2>/dev/null
             log_me "* 充电开始 | ${CAPACITY}%"
@@ -467,6 +469,10 @@ while true; do
                 IN_SUM=$(echo "$IN_SUM $IN_POWER_W" | awk '{printf "%.1f", $1+$2}')
                 IN_COUNT=$((IN_COUNT + 1))
                 [ "$(echo "$IN_POWER_W $IN_PEAK" | awk '{print ($1>$2)}')" = "1" ] && IN_PEAK=$IN_POWER_W
+            fi
+            # 记录输入电压峰值(µV) - PPS 下输入电流不可读, 但电压可用, 可反映 PPS 档位
+            if [ -n "$IN_V" ] && [ "$IN_V" -gt "$IN_V_PEAK" ] 2>/dev/null; then
+                IN_V_PEAK=$IN_V
             fi
             if [ $TEMP_C -gt 0 ] && [ $TEMP_C -lt 100 ]; then
                 TEMP_SUM=$((TEMP_SUM + TEMP_C))
