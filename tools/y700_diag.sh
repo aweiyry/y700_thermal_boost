@@ -229,7 +229,7 @@ out ""
 
 # ---------- 8. 动态采样 ----------
 out "【8】动态采样 (每 5 秒, 共 ${DURATION} 秒)"
-out "  时间     状态       协议    电量  电池功率  iin(pmih)  iin(smb1)  iin(smb2)  usb_i  伪装维持"
+out "  时间     状态       协议    电量  电池功率  iin(pmih)  iin(smb1)  iin(smb2)  usb_i  限流  伪装维持"
 SAMPLES=$((DURATION / 5))
 [ "$SAMPLES" -lt 1 ] && SAMPLES=1
 # 先解析节点路径(避免循环里反复 find)
@@ -259,7 +259,15 @@ while [ $i -lt $SAMPLES ]; do
     if [ -n "$FZ" ]; then
         if [ "$(zone_temp "$FZ")" = "$FAKE_CHG" ]; then OK="是"; FAKE_OK_N=$((FAKE_OK_N+1)); else OK="否($(zone_temp "$FZ"))"; FAKE_BAD_N=$((FAKE_BAD_N+1)); fi
     fi
-    out "  $T  $ST  $PR  $CP%  ${PW}W  ${I1:-空}  ${I2:-空}  ${I3:-空}  ${UI:-空}  $OK"
+    # 充电限流状态 (battery 冷却设备 state, 越大限得越狠)
+    LT=$(cat /sys/class/thermal/cooling_device35/cur_state 2>/dev/null)
+    if [ -z "$LT" ]; then
+        for c in /sys/class/thermal/cooling_device*; do
+            [ "$(cat $c/type 2>/dev/null)" = "battery" ] && { LT=$(cat $c/cur_state 2>/dev/null); break; }
+        done
+    fi
+    [ -z "$LT" ] && LT="?"
+    out "  $T  $ST  $PR  $CP%  ${PW}W  ${I1:-空}  ${I2:-空}  ${I3:-空}  ${UI:-空}  $LT  $OK"
     i=$((i+1))
     [ $i -lt $SAMPLES ] && sleep 5
 done
@@ -267,6 +275,9 @@ out ""
 out "  伪装维持统计: 正常 $FAKE_OK_N 次 / 失效 $FAKE_BAD_N 次"
 [ "$FAKE_BAD_N" -gt 0 ] && add_problem "采样中有 $FAKE_BAD_N 次温度伪装失效 -> 伪装不稳定"
 out "  电荷泵输入电流节点(smb1501)有值次数: $PPS_IIN_OK"
+out ""
+out "  ※ 限流列 = battery 冷却设备 state (0=未限流, 越大充电电流限得越狠)"
+out "    若充电功率偏低且此列 >0, 说明被平台的充电限流策略压住了"
 out ""
 
 # ---------- 9. 结论 ----------
