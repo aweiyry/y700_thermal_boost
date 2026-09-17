@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.4
+# Y700 Unified Thermal Boost + Charge Log - V6.5
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -22,6 +22,10 @@
 # V6.4 新增:
 #   - 充电日志增加"输入功率"(区分充电器输入 vs 电池实得, 便于诊断边充边玩)
 #   - 修复充电协议在最终日志恒为"未识别"(改为充电期间捕获并留存)
+# V6.5 修复:
+#   - 输入电流改用 PMIC IIO ADC(in_current_*_iin_input): PPS 快充下
+#     usb/current_now 恒为 0 导致输入功率恒为 0
+#   - 未采集到有效输入电流时显示"不可读", 不再显示误导性的 0W
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -67,6 +71,31 @@ PROTOCOL_PATH="/sys/class/power_supply/usb/real_type"
 IN_VOLTAGE_PATH="/sys/class/power_supply/usb/voltage_now"
 IN_CURRENT_PATH="/sys/class/power_supply/usb/current_now"
 IN_LIMIT_PATH="/sys/class/power_supply/usb/input_current_limit"
+# PMIC IIO ADC 的输入电流节点 (PPS 快充下 usb/current_now 恒为 0, 必须用这个)
+# 启动时通过 find 解析, 兼容各代机型
+IIN_NODE=""
+
+resolve_iin_node() {
+    IIN_NODE=""
+    for f in $(find /sys/devices/platform/soc -maxdepth 8 -name "in_current_*_iin_input" 2>/dev/null); do
+        case "$f" in
+            *pmih010x_iin*) IIN_NODE="$f"; return 0 ;;
+        esac
+    done
+    for f in $(find /sys/devices/platform/soc -maxdepth 8 -name "in_current_*_iin_input" 2>/dev/null); do
+        if [ -n "$(cat "$f" 2>/dev/null)" ]; then IIN_NODE="$f"; return 0; fi
+    done
+    return 1
+}
+
+# 读取输入电流(µA): 优先 IIO ADC(iin), 回退 usb/current_now
+read_input_current() {
+    if [ -n "$IIN_NODE" ]; then
+        v=$(cat "$IIN_NODE" 2>/dev/null)
+        [ -n "$v" ] && echo "$v" && return 0
+    fi
+    cat "$IN_CURRENT_PATH" 2>/dev/null
+}
 
 ENABLE_THERMAL_BYPASS=1
 ENABLE_CHARGE_LOG=1
@@ -211,7 +240,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.4 启动"
+log_me "$DEVICE_LABEL 统一模块 V6.5 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -240,6 +269,9 @@ for z in $ALL_ZONES; do zone_valid "$z" && zone_count=$((zone_count + 1)); done
 HAS_CCL=0
 [ -r "$CCL_MAX_PATH" ] && [ -e "$CCL_PATH" ] && HAS_CCL=1
 
+# 解析输入电流节点 (PPS 下 usb/current_now 恒为 0, 需用 PMIC IIO ADC)
+resolve_iin_node && log_me "* 输入电流节点: $IIN_NODE" || log_me "! 未找到 IIO 输入电流节点, 回退 usb/current_now"
+
 log_me "* 温区 ${zone_count} 个 | CCL=$([ "$HAS_CCL" = "1" ] && echo 支持 || echo 无) | 温控=$ENABLE_THERMAL_BYPASS | 日志=$ENABLE_CHARGE_LOG | 杀进程间隔=${KILL_INTERVAL}s"
 
 mkdir -p "$TMP_DIR" "$LOG_DIR" "$STATE_DIR" 2>/dev/null
@@ -265,7 +297,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.4"
+            echo "  模块版本:   V6.5"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -298,7 +330,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.4"
+        echo "  模块版本:   V6.5"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
@@ -321,8 +353,12 @@ flush_charging_log() {
         echo "【功率统计】"
         echo "  电池峰值功率: ${POWER_PEAK}W"
         echo "  电池平均功率: ${AVG_POWER}W"
-        echo "  输入峰值功率: ${IN_PEAK}W"
-        echo "  输入平均功率: ${IN_AVG}W"
+        if [ "${IN_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+            echo "  输入峰值功率: ${IN_PEAK}W"
+            echo "  输入平均功率: ${IN_AVG}W"
+        else
+            echo "  输入功率:   不可读(本次未采集到有效输入电流)"
+        fi
         echo ""
         echo "【温度统计】"
         echo "  峰值温度:   ${TEMP_PEAK}C"
@@ -388,7 +424,7 @@ while true; do
     VOLTAGE=$(cat "$VOLTAGE_PATH" 2>/dev/null)
     TEMP_RAW=$(cat "$TEMP_PATH" 2>/dev/null)
     IN_V=$(cat "$IN_VOLTAGE_PATH" 2>/dev/null)
-    IN_I=$(cat "$IN_CURRENT_PATH" 2>/dev/null)
+    IN_I=$(read_input_current)
     IN_LIMIT=$(cat "$IN_LIMIT_PATH" 2>/dev/null)
     POWER_W=$(calc_power_w "$VOLTAGE" "$CURRENT")
     IN_POWER_W=$(calc_power_w "$IN_V" "$IN_I")

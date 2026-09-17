@@ -84,9 +84,12 @@ fun RealtimeScreen(
                 Text("输入 (充电器)", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(6.dp))
                 InfoRow("输入电压", fmtV(data.inputVoltageUv))
-                InfoRow("输入电流", fmtA(data.inputCurrentUa))
+                // 充电中但输入电流为 0 = 节点不可读(PPS 下旧节点恒为 0), 明确提示而非显示骗人的 0
+                val unavailable = data.isCharging && !data.inputReadable
+                InfoRow("输入电流", if (unavailable) "不可读" else fmtA(data.inputCurrentUa))
+                InfoRow("输入功率", if (unavailable) "不可读" else fmtW(data.inputPowerW))
                 if (data.inputLimitUa > 0) InfoRow("输入电流上限", fmtA(data.inputLimitUa))
-                InfoRow("充电类型", data.chargeType.ifBlank { "—" })
+                InfoRow("充电阶段", data.chargeType.ifBlank { "—" })
             }
         }
 

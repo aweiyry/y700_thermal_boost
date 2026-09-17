@@ -24,6 +24,9 @@ data class ChargeData(
     val batteryTempC: Double get() = batteryTempDeciC / 10.0
     val isCharging: Boolean get() = status.equals("Charging", ignoreCase = true)
     val protocolLabel: String get() = mapProtocol(protocol)
+
+    /** 输入电流是否可读 (PPS 快充下 usb/current_now 恒为 0, 需用 PMIC IIO ADC) */
+    val inputReadable: Boolean get() = inputCurrentUa > 0
 }
 
 fun mapProtocol(raw: String): String = when (raw.uppercase()) {
@@ -40,7 +43,32 @@ fun mapProtocol(raw: String): String = when (raw.uppercase()) {
 
 object ChargeReader {
 
-    private val CMD = """
+    private const val USB_CURRENT = "/sys/class/power_supply/usb/current_now"
+
+    /** PMIC IIO ADC 输入电流节点; null = 尚未解析 */
+    @Volatile
+    private var iinNode: String? = null
+
+    private fun resolveIinNode(): String {
+        val out = runCatching {
+            Shell.su(
+                "find /sys/devices/platform/soc -maxdepth 8 -name 'in_current_*_iin_input' 2>/dev/null" +
+                    " | grep pmih010x_iin | head -1"
+            ).exec().out
+        }.getOrNull() ?: return ""
+        return out.firstOrNull()?.trim().orEmpty()
+    }
+
+    /** 输入电流来源: 优先 IIO ADC(PPS 下唯一可用), 回退 usb/current_now */
+    private fun inputCurrentPath(): String {
+        if (iinNode == null) iinNode = resolveIinNode()
+        val n = iinNode
+        return if (!n.isNullOrEmpty()) n else USB_CURRENT
+    }
+
+    private fun buildCmd(): String {
+        val iin = inputCurrentPath()
+        return """
         echo "BATCUR $(cat /sys/class/power_supply/battery/current_now 2>/dev/null)"
         echo "BATVOL $(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null)"
         echo "BATTEMP $(cat /sys/class/power_supply/battery/temp 2>/dev/null)"
@@ -51,14 +79,15 @@ object ChargeReader {
         echo "CCLMAX $(cat /sys/class/power_supply/battery/charge_control_limit_max 2>/dev/null)"
         echo "PROTO $(cat /sys/class/power_supply/usb/real_type 2>/dev/null)"
         echo "INVOL $(cat /sys/class/power_supply/usb/voltage_now 2>/dev/null)"
-        echo "INCUR $(cat /sys/class/power_supply/usb/current_now 2>/dev/null)"
+        echo "INCUR $(cat "$iin" 2>/dev/null)"
         echo "INLIMIT $(cat /sys/class/power_supply/usb/input_current_limit 2>/dev/null)"
         echo "MODVER $(grep '^version=' /data/adb/modules/y700_thermal_boost/module.prop 2>/dev/null | cut -d= -f2)"
         echo "MODRUN $(if grep -qa 'y700_thermal_boost/service.sh' /proc/$(cat /data/local/tmp/y700_thermal_boost.pid 2>/dev/null)/cmdline 2>/dev/null; then echo 1; else grep -la 'y700_thermal_boost/service.sh' /proc/[0-9]*/cmdline 2>/dev/null | head -1 | wc -l; fi)"
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     fun read(): ChargeData {
-        val result = runCatching { Shell.su(CMD).exec() }.getOrNull()
+        val result = runCatching { Shell.su(buildCmd()).exec() }.getOrNull()
         if (result == null || !result.isSuccess) return ChargeData()
         val map = mutableMapOf<String, String>()
         for (line in result.out) {

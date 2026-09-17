@@ -1,0 +1,96 @@
+============================================================
+        Y700 温控模块 诊断报告
+============================================================
+生成时间: 2026-09-17 08:59:52
+采样时长: 30 秒
+
+【1】环境信息
+  设备型号:   TB323FU
+  Android:    16 (SDK 36)
+  内核:       6.12.30-android16-5-g1750f757fabe-ab13938768-4k
+  Root:       已获取(uid=0)
+  SELinux:    Enforcing
+  当前上下文: u:r:ksu:s0
+  机型识别:   五代 (TB323FU)
+
+【2】模块安装状态
+  模块目录:   存在
+  版本:       V6.5
+  service.sh: 存在
+  config.prop:存在
+  启用状态:   已启用
+  service.d:  存在
+  温控开关:   ENABLE_THERMAL_BYPASS=1
+  伪装温度:   CHG=25000 BATT=28000 USB=25000 AP=30000 (毫摄氏度)
+
+【3】模块服务进程
+  运行中 pid=7755  状态=S
+  锁文件 pid: 7755
+
+【4】温区检查 (核心)
+  --- 设备上实际存在的全部温区 ---
+  cpullc-0-0 cpullc-0-1 cpu-0-2-1 sdr0 mmw_ific0 mmw0 mmw1 mmw2 mmw3 cpu-0-3-0 cpu-0-3-1 cpu-0-4-0 cpu-0-4-1 cpu-0-5-0 cpu-0-5-1 cpullc-1-0 cpullc-1-1 qmx-1-0 qmx-0-0 qmx-1-1 qmx-1-2 qmx-1-3 qmx-1-4 cpu-1-0-0 cpu-1-0-1 cpu-1-1-0 cpu-1-1-1 nsphvx-0 nsphvx-1 qmx-0-1 nsphvx-2 nsphvx-3 nsphmx-0 nsphmx-1 nsphmx-2 nsphmx-3 gpuss-0 gpuss-1 gpuss-2 gpuss-3 qmx-0-2 gpuss-4 gpuss-5 gpuss-6 gpuss-7 gpuss-8 gpuss-9 gpuss-10 ddr mdmss-0 mdmss-1 cpu-0-0-0 mdmss-2 mdmss-3 camera-0 camera-1 video cpu-hw-trip-0 socd pmh0101-bcl-lvl0 cpu-hw-trip-1 pmh0104_tz cpu-0-0-1 front_temp xo-therm pmh0101-bcl-lvl1 pmr735d_tz back_temp fast-chg-therm pmh0101-bcl-lvl2 user_temp batt-pack-therm vbat cpu-0-1-0 usb user_front_temp usb1-conn-therm pmih010x-ibat-lvl0 user_back_temp wireless pmih010x-ibat-lvl1 battery pmih010x-bcl-lvl0 batt2-pack-therm cpu-0-1-1 pmih010x-bcl-lvl1 top-chg-therm pmih010x-bcl-lvl2 ap-therm flash-led-ntc wlan-therm usb2-conn-therm rear-cam-ntc quiet-therm ufs-therm cpu-0-2-0 fcam-ntc lcm-thermal pmh0101_tz pmh0110_d_tz pmh0110_f_tz pmh0110_g_tz pmh0110_i_tz pmih010x_tz pmih010x_lite_tz sdr0_pa 
+
+  --- 模块目标温区 ---
+  温区               mode   temp     期望   结论
+  fast-chg-therm       disabled 25000    25000    正常(已禁用+伪装)
+  top-chg-therm        disabled 25000    25000    正常(已禁用+伪装)
+  usb                  disabled 25000    25000    正常(已禁用+伪装)
+  usb1-conn-therm      disabled 25000    25000    正常(已禁用+伪装)
+  usb2-conn-therm      disabled 25000    25000    正常(已禁用+伪装)
+  ap-therm             disabled 30000    30000    正常(已禁用+伪装)
+  lcm-thermal          disabled 30000    30000    正常(已禁用+伪装)
+  battery              enabled 28000    28000    正常(已伪装)
+  quiet-therm          enabled 28000    28000    正常(已伪装)
+  batt-pack-therm      enabled 28000    28000    正常(已伪装)
+  batt2-pack-therm     enabled 28000    28000    正常(已伪装)
+  batt1-therm          -      -        28000    未找到(本机型无此温区)
+  batt2-therm          -      -        28000    未找到(本机型无此温区)
+
+  小结: 命中 11 个, 本机无 2 个, 未生效 0 个
+
+【5】写入权限测试
+  emul_temp 可写: 是
+  mode 可写: 是
+
+【6】温控进程
+  root         28536     1   13842228  10568 __arm64_sys_rt_sigsuspend 0 S thermal-engine-v2
+  root         28540     1   10854868   7232 binder_thread_read  0 S android.hardware.thermal-service.qti
+
+【7】充电状态与输入电流节点
+  状态:       Charging   电量: 75%
+  电池:       4149000 uV / 486000 uA / 343 (0.1C)
+  协议:       SDP
+  输入电压:   4979000 uV
+  输入电流:   497000 uA (PPS 下可能恒为 0)
+  充电阶段:   Fast
+  CCL:        12400000/12400000
+  --- IIO 输入电流节点 ---
+  in_current_smb1501_1_iin_input = 
+  in_current_smb1501_2_iin_input = 
+  in_current_pmih010x_iin_input = 496525
+  in_current_smb1501_1_ichg_input = 
+  in_current_smb1501_2_ichg_input = 
+
+【8】动态采样 (每 5 秒, 共 30 秒)
+  时间     状态       协议    电量  电池功率  输入电流  伪装维持
+  08:59:59  Charging  SDP  75%  2.2W  497943uA  是
+  09:00:05  Charging  SDP  75%  0.1W  496321uA  是
+  09:00:10  Charging  SDP  75%  0.2W  497537uA  是
+  09:00:15  Charging  SDP  75%  0.2W  498956uA  是
+  09:00:21  Charging  SDP  75%  0.0W  496728uA  是
+  09:00:26  Charging  SDP  75%  0.9W  496321uA  是
+
+  伪装维持统计: 正常 6 次 / 失效 0 次
+
+============================================================
+【9】诊断结论
+============================================================
+  未发现明显问题, 模块各作用点正常。
+  若仍感觉'没效果', 请确认:
+   1) 是否使用原装/支持 PD-PPS 的快充充电器 (SDP/DCP 无法高功率)
+   2) 电池真实温度是否过高(>40C)触发充电IC硬件限流(模块无法绕过)
+
+============================================================
+  报告已保存: /sdcard/Y700模块诊断_20260917_085952.txt
+============================================================
