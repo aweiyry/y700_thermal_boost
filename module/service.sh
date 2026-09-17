@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.5
+# Y700 Unified Thermal Boost + Charge Log - V6.6
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -26,33 +26,39 @@
 #   - 输入电流改用 PMIC IIO ADC(in_current_*_iin_input): PPS 快充下
 #     usb/current_now 恒为 0 导致输入功率恒为 0
 #   - 未采集到有效输入电流时显示"不可读", 不再显示误导性的 0W
+# V6.6 修复:
+#   - 单实例保护改用 /proc 扫描 + pid 仲裁: 修复开机瞬间「锁文件内容尚未写入
+#     就被读到空值」的竞态, 该竞态会导致两个实例同时运行(日志互相覆盖)
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
 
-# ---- 单实例保护 (KSU 与 service.d 可能同时拉起, 只保留一个) ----
-# 用 noclobber + O_EXCL 原子创建 pid 文件, 消除开机并发竞态
-LOCK_FILE="/data/local/tmp/y700_thermal_boost.pid"
-is_running() {
-    # 校验 pid 确实属于本模块服务, 防止 pid 被其它进程复用导致误判
-    [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && grep -qa "y700_thermal_boost/service.sh" "/proc/$1/cmdline" 2>/dev/null
+# ---- 单实例保护 (KSU 与 service.d 会同时拉起, 只保留一个) ----
+# 不用锁文件(存在「创建后内容尚未写入就被读到空值」的竞态 + pid 复用问题),
+# 改为扫描 /proc 找同脚本实例, 并以 pid 大小仲裁: 只认比本进程更早启动(lower pid)的,
+# 早启动者胜出, 后来者退出。
+PID_FILE="/data/local/tmp/y700_thermal_boost.pid"
+older_instance_running() {
+    for p in /proc/[0-9]*; do
+        _p=${p##*/}
+        [ "$_p" = "$$" ] && continue
+        [ "$_p" -lt "$$" ] 2>/dev/null || continue
+        grep -qa "y700_thermal_boost/service.sh" "$p/cmdline" 2>/dev/null && return 0
+    done
+    return 1
 }
-set -C
-if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
-    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
-    if is_running "$LOCK_PID"; then
-        echo "y700_thermal_boost already running (pid $LOCK_PID), exit"
-        exit 0
-    fi
-    # 残留锁(持有者已死或pid被复用), 清理后重试一次
-    rm -f "$LOCK_FILE"
-    if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
-        echo "y700_thermal_boost lock contention, exit"
-        exit 0
-    fi
+if older_instance_running; then
+    echo "y700_thermal_boost: 已有更早启动的实例, 退出"
+    exit 0
 fi
-set +C
-trap 'rm -f "$LOCK_FILE"' EXIT TERM INT
+# 开机时两个实例几乎同时启动, 等 3 秒让对方的命令行可见后复查
+sleep 3
+if older_instance_running; then
+    echo "y700_thermal_boost: 检测到更早实例, 退出"
+    exit 0
+fi
+echo $$ > "$PID_FILE" 2>/dev/null
+trap 'rm -f "$PID_FILE"' EXIT TERM INT
 
 LOG_TAG="Y700-ThermalBoost"
 LOG_DIR="/sdcard/充电日志"
@@ -240,7 +246,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.5 启动"
+log_me "$DEVICE_LABEL 统一模块 V6.6 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -297,7 +303,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.5"
+            echo "  模块版本:   V6.6"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -330,7 +336,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.5"
+        echo "  模块版本:   V6.6"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"

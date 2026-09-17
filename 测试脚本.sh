@@ -200,24 +200,6 @@ out "  输入电压:   $(cat $U/voltage_now 2>/dev/null) uV"
 out "  输入电流:   $(cat $U/current_now 2>/dev/null) uA (PPS 下可能恒为 0)"
 out "  充电阶段:   $(cat $B/charge_type 2>/dev/null)"
 out "  CCL:        $(cat $B/charge_control_limit 2>/dev/null)/$(cat $B/charge_control_limit_max 2>/dev/null)"
-out "  输入电流上限: $(cat $U/input_current_limit 2>/dev/null) uA"
-echo "  --- 充电限流相关冷却设备 (state>0 = 正在限流) ---" >> "$REPORT"; echo "  --- 充电限流相关冷却设备 (state>0 = 正在限流) ---"
-for c in /sys/class/thermal/cooling_device*; do
-    [ -d "$c" ] || continue
-    ty=$(cat "$c/type" 2>/dev/null)
-    st=$(cat "$c/cur_state" 2>/dev/null)
-    mx=$(cat "$c/max_state" 2>/dev/null)
-    case "$ty" in
-        battery|cpufreq*|cpu-cluster*|gpu|kgsl|ddr-cdev|ufs)
-            if [ -n "$st" ] && [ "$st" != "0" ]; then
-                out "  ★ $(basename $c) type=$ty state=$st/$mx  <<< 正在限流"
-            else
-                out "    $(basename $c) type=$ty state=${st:-?}/${mx:-?}"
-            fi
-            ;;
-    esac
-done
-out "  (battery 冷却设备 = 充电电流限流, state 越大限流越狠)"
 echo "  --- IIO 输入电流节点 ---" >> "$REPORT"; echo "  --- IIO 输入电流节点 ---"
 for f in $(find /sys/devices/platform/soc -maxdepth 8 -name "in_current_*_iin_input" 2>/dev/null); do
     out "  $(basename $f) = $(cat "$f" 2>/dev/null)"
