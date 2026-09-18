@@ -188,17 +188,26 @@ if [ -e "$CCLP" ] && [ -e "$CCLMAXP" ]; then
     CM=$(cat "$CCLMAXP" 2>/dev/null)
     CC=$(cat "$CCLP" 2>/dev/null)
     out "  CCL 当前: $CC / 上限 $CM"
-    if [ -n "$CM" ]; then
-        echo "$CM" > "$CCLP" 2>/dev/null
-        C2=$(cat "$CCLP" 2>/dev/null)
-        if [ "$C2" = "$CM" ]; then
-            out "  CCL 可写: 是 (写入后生效)"
+    if [ -n "$CM" ] && [ "$CM" -gt 0 ] 2>/dev/null; then
+        # 必须写入一个「与当前不同」的值才能证明可写(写相同值恒为一致, 会假阳性)
+        if [ "$CC" = "$CM" ]; then
+            TV=$((CM / 2))          # 当前已是上限, 用半值测试
         else
-            out "  CCL 可写: 否 —— 写入(=$CM)后被平台改回 $C2"
+            TV="$CM"                # 当前低于上限, 直接试写上限
+        fi
+        echo "$TV" > "$CCLP" 2>/dev/null
+        sleep 1
+        C2=$(cat "$CCLP" 2>/dev/null)
+        if [ "$C2" = "$TV" ]; then
+            out "  CCL 可写: 是 (写入 $TV 生效, 说明模块的解锁能起作用)"
+        else
+            out "  CCL 可写: 否 —— 写入 $TV 后读回 $C2 (被平台改回, 模块解锁无效)"
             add_problem "CCL 不可控: 平台自己管着充电电流上限, 模块的解锁无效"
         fi
         # 恢复原值
         [ -n "$CC" ] && echo "$CC" > "$CCLP" 2>/dev/null
+        sleep 1
+        out "  CCL 已恢复: $(cat "$CCLP" 2>/dev/null)"
     fi
 fi
 out ""
