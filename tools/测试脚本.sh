@@ -14,12 +14,6 @@ REPORT="/sdcard/Y700模块诊断_${TS}.txt"
 WORK=/data/local/tmp/y700_diag
 mkdir -p "$WORK" 2>/dev/null
 
-# 电源节点路径
-B=/sys/class/power_supply/battery
-U=/sys/class/power_supply/usb
-CCLP="$B/charge_control_limit"
-CCLMAXP="$B/charge_control_limit_max"
-
 out() { echo "$1" >> "$REPORT"; echo "$1"; }
 
 # ---------- 结论收集 ----------
@@ -183,24 +177,6 @@ if [ "$CFG_BYPASS" = "1" ]; then
 else
     out "  温控绕过已关闭, 跳过"
 fi
-# CCL(充电电流上限) 可写性 —— 决定模块能否解除平台限流
-if [ -e "$CCLP" ] && [ -e "$CCLMAXP" ]; then
-    CM=$(cat "$CCLMAXP" 2>/dev/null)
-    CC=$(cat "$CCLP" 2>/dev/null)
-    out "  CCL 当前: $CC / 上限 $CM"
-    if [ -n "$CM" ]; then
-        echo "$CM" > "$CCLP" 2>/dev/null
-        C2=$(cat "$CCLP" 2>/dev/null)
-        if [ "$C2" = "$CM" ]; then
-            out "  CCL 可写: 是 (写入后生效)"
-        else
-            out "  CCL 可写: 否 —— 写入(=$CM)后被平台改回 $C2"
-            add_problem "CCL 不可控: 平台自己管着充电电流上限, 模块的解锁无效"
-        fi
-        # 恢复原值
-        [ -n "$CC" ] && echo "$CC" > "$CCLP" 2>/dev/null
-    fi
-fi
 out ""
 
 # ---------- 6. 温控进程 ----------
@@ -215,54 +191,16 @@ out ""
 
 # ---------- 7. 充电与输入电流节点 ----------
 out "【7】充电状态与输入电流节点"
-DST=$(cat $B/status 2>/dev/null)
-DCAP=$(cat $B/capacity 2>/dev/null)
-DBV=$(cat $B/voltage_now 2>/dev/null); DBV=${DBV#-}; DBV=${DBV:-0}
-DBI=$(cat $B/current_now 2>/dev/null); DBI=${DBI#-}; DBI=${DBI:-0}
-DBT=$(cat $B/temp 2>/dev/null); DBT=${DBT:-0}
-DUV=$(cat $U/voltage_now 2>/dev/null); DUV=${DUV#-}; DUV=${DUV:-0}
-DUI=$(cat $U/current_now 2>/dev/null); DUI=${DUI#-}; DUI=${DUI:-0}
-DCCL=$(cat $CCLP 2>/dev/null); DCCL=${DCCL:-0}
-DCCLM=$(cat $CCLMAXP 2>/dev/null); DCCLM=${DCCLM:-0}
-DILIM=$(cat $U/input_current_limit 2>/dev/null); DILIM=${DILIM:-0}
-BPW=$(awk "BEGIN{printf \"%.1f\", $DBV*$DBI/1e12}" 2>/dev/null)
-UPW=$(awk "BEGIN{printf \"%.1f\", $DUV*$DUI/1e12}" 2>/dev/null)
-DTC=$(awk "BEGIN{printf \"%.1f\", $DBT/10}" 2>/dev/null)
-DPR=$(cat $U/real_type 2>/dev/null)
-
-out "  状态:       $DST   电量: ${DCAP}%"
-out "  协议:       $DPR"
-out "  电池:       $(awk "BEGIN{printf \"%.3f\", $DBV/1000000}")V / $(awk "BEGIN{printf \"%.2f\", $DBI/1000000}")A / ${DTC}C  => ${BPW}W"
-out "  输入:       $(awk "BEGIN{printf \"%.3f\", $DUV/1000000}")V / $(awk "BEGIN{printf \"%.2f\", $DUI/1000000}")A  => ${UPW}W"
-out "  输入电流上限: $(awk "BEGIN{printf \"%.2f\", $DILIM/1000000}")A (输入侧能拉多少)"
-out "  CCL 充电电流上限: $(awk "BEGIN{printf \"%.2f\", $DCCL/1000000}")A / 上限 $(awk "BEGIN{printf \"%.2f\", $DCCLM/1000000}")A (电池侧被限多少)"
+B=/sys/class/power_supply/battery
+U=/sys/class/power_supply/usb
+out "  状态:       $(cat $B/status 2>/dev/null)   电量: $(cat $B/capacity 2>/dev/null)%"
+out "  电池:       $(cat $B/voltage_now 2>/dev/null) uV / $(cat $B/current_now 2>/dev/null) uA / $(cat $B/temp 2>/dev/null) (0.1C)"
+out "  协议:       $(cat $U/real_type 2>/dev/null)"
+out "  输入电压:   $(cat $U/voltage_now 2>/dev/null) uV"
+out "  输入电流:   $(cat $U/current_now 2>/dev/null) uA (PPS 下可能恒为 0)"
 out "  充电阶段:   $(cat $B/charge_type 2>/dev/null)"
-out ""
-out "  --- 充电限流分析 ---"
-# 电池温度
-if [ -n "$DBT" ] && [ "$DBT" -gt 400 ] 2>/dev/null; then
-    out "  ⚠ 电池真实温度 ${DTC}C 偏高(>40C) -> 很可能触发充电温度保护(JEITA)而限流"
-    out "    (模块只伪装 thermal 温区, 电池真实温度节点只读, 无法绕过)"
-    add_problem "电池温度 ${DTC}C 偏高, 平台会因此主动降低充电电流(硬件保护, 模块绕不过)"
-fi
-# CCL 是否被压
-if [ -n "$DCCL" ] && [ -n "$DCCLM" ] && [ "$DCCLM" -gt 0 ] 2>/dev/null; then
-    PCT=$((DCCL * 100 / DCCLM))
-    if [ "$PCT" -lt 60 ]; then
-        out "  ⚠ CCL 仅用到 ${PCT}% (${DCCL}/${DCCLM}) -> 电池充电电流被平台压着, 这是功率上不去的主因"
-        add_problem "CCL 被压到 ${PCT}%(平台管控), 充电电流上不去"
-    else
-        out "  √ CCL 未明显受限 (${PCT}%)"
-    fi
-fi
-# 输入侧是否还有余量
-if [ -n "$DUI" ] && [ -n "$DILIM" ] && [ "$DILIM" -gt 0 ] 2>/dev/null; then
-    IPCT=$((DUI * 100 / DILIM))
-    if [ "$IPCT" -lt 60 ]; then
-        out "  ⚠ 输入电流只用到 ${IPCT}% (设备没向充电器多要) -> 瓶颈在设备端(电池侧/策略), 不是充电器不够"
-    fi
-fi
-out ""
+out "  CCL:        $(cat $B/charge_control_limit 2>/dev/null)/$(cat $B/charge_control_limit_max 2>/dev/null)"
+out "  输入电流上限: $(cat $U/input_current_limit 2>/dev/null) uA"
 echo "  --- 充电限流相关冷却设备 (state>0 = 正在限流) ---" >> "$REPORT"; echo "  --- 充电限流相关冷却设备 (state>0 = 正在限流) ---"
 for c in /sys/class/thermal/cooling_device*; do
     [ -d "$c" ] || continue

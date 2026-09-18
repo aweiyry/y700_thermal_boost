@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.6
+# Y700 Unified Thermal Boost + Charge Log - V6.7
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -29,6 +29,9 @@
 # V6.6 修复:
 #   - 单实例保护改用 /proc 扫描 + pid 仲裁: 修复开机瞬间「锁文件内容尚未写入
 #     就被读到空值」的竞态, 该竞态会导致两个实例同时运行(日志互相覆盖)
+# V6.7 修复:
+#   - 杀温控进程改为按进程名通用匹配, 兼容非 .qti 命名
+#     (如 android.hardware.thermal-service@1.0), 提升异机型兼容性
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -227,8 +230,15 @@ unlock_ccl() {
 }
 
 kill_thermal_services() {
-    kill $(pidof thermal-engine-v2) 2>/dev/null
-    kill $(pidof android.hardware.thermal-service.qti) 2>/dev/null
+    # 通用匹配: 兼容各机型/各代热服务命名
+    #   Y700 五代: android.hardware.thermal-service.qti / thermal-engine-v2
+    #   其他机型:  android.hardware.thermal-service@1.0 / thermal_hal / vendor.thermal-hal 等
+    # 注: 用 ps -o NAME 读取进程名(comm), 不依赖 ps 的 ARGS 列(其常被截断)
+    ps -A -o PID,NAME 2>/dev/null | while read -r _pid _name; do
+        case "$_name" in
+            *thermal*|*Thermal*) kill "$_pid" 2>/dev/null ;;
+        esac
+    done
 }
 
 prune_old_logs() {
@@ -246,7 +256,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.6 启动"
+log_me "$DEVICE_LABEL 统一模块 V6.7 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -303,7 +313,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.6"
+            echo "  模块版本:   V6.7"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -336,7 +346,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.6"
+        echo "  模块版本:   V6.7"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
