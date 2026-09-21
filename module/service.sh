@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.9
+# Y700 Unified Thermal Boost + Charge Log - V7.0
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -38,6 +38,15 @@
 # V6.9 修复:
 #   - 上述校验收窄为「仅对 PPS/PD 生效」: SDP/DCP 下节点可靠,
 #     避免电池读数尖峰把有效输入样本误剔除
+# V7.0 新增(兼容性开关, 解决部分四代/五代机型充电被锁在 10W):
+#   - ZONE_MODE=1|2  温区处理方式
+#       1 = 禁用温区 + 伪装温度 (默认, 游戏性能最好)
+#       2 = 仅伪装温度, 保持温区 mode=enabled
+#     背景: 部分平台在温区被 disabled 后会回落到保护性小电流(实测约10W),
+#     此时改用「仅伪装」即可骗过温控又不触发该保护逻辑
+#   - KILL_THERMAL=0|1  是否击杀温控进程
+#       1 = 杀(默认)  0 = 不杀, 交给平台自管(杀进程可能触发充电策略异常)
+#   - ZONE_MODE=2 时会把此前禁用的温区重新写回 enabled
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -121,6 +130,10 @@ FAKE_TEMP_USB=25000
 FAKE_TEMP_AP=30000
 LOG_KEEP_COUNT=30
 KILL_INTERVAL=60
+# 温区处理方式: 1=禁用+伪装(默认, 游戏性能最好)  2=仅伪装不禁用(部分平台需要, 兼容性更好)
+ZONE_MODE=1
+# 是否击杀温控进程: 1=杀(默认) 0=不杀(部分平台杀进程会导致充电策略异常)
+KILL_THERMAL=1
 
 load_config() {
     [ -f "$MODDIR/config.prop" ] || return 0
@@ -130,7 +143,7 @@ load_config() {
         key=${line%%=*}
         val=${line#*=}
         case "$key" in
-            ENABLE_THERMAL_BYPASS|ENABLE_CHARGE_LOG|SAMPLE_INTERVAL|FAKE_TEMP_CHG|FAKE_TEMP_BATT|FAKE_TEMP_USB|FAKE_TEMP_AP|LOG_KEEP_COUNT|KILL_INTERVAL)
+            ENABLE_THERMAL_BYPASS|ENABLE_CHARGE_LOG|SAMPLE_INTERVAL|FAKE_TEMP_CHG|FAKE_TEMP_BATT|FAKE_TEMP_USB|FAKE_TEMP_AP|LOG_KEEP_COUNT|KILL_INTERVAL|ZONE_MODE|KILL_THERMAL)
                 eval "$key=\"$val\""
                 ;;
         esac
@@ -145,6 +158,8 @@ case "$KILL_INTERVAL" in
 esac
 [ "$KILL_INTERVAL" -lt 5 ] 2>/dev/null && KILL_INTERVAL=5
 [ "$SAMPLE_INTERVAL" -lt 1 ] 2>/dev/null && SAMPLE_INTERVAL=5
+case "$ZONE_MODE" in 1|2) ;; *) ZONE_MODE=1 ;; esac
+case "$KILL_THERMAL" in 0|1) ;; *) KILL_THERMAL=1 ;; esac
 
 log_me() { log -t "$LOG_TAG" "$1"; echo "$1"; }
 
@@ -223,7 +238,24 @@ clear_fake_temps() {
 
 apply_thermal_bypass() {
     # 仅禁用温区; 温度伪装由主循环按充电状态管理
+    # ZONE_MODE=2 时不禁用温区(部分平台禁用后充电策略会回落到保护性小电流)
+    if [ "$ZONE_MODE" != "1" ]; then
+        restore_zone_mode
+        return 0
+    fi
     for z in $DISABLE_ZONES; do disable_zone_mode "$z"; done
+}
+
+# 恢复温区: ZONE_MODE=2 切回 1 时把之前禁用的温区重新启用
+restore_zone_mode() {
+    [ "$ZONE_MODE" = "1" ] && return 0
+    [ -f "$DISABLED_LIST" ] || return 0
+    while IFS= read -r z; do
+        [ -n "$z" ] || continue
+        zone_valid "$z" || continue
+        echo "enabled" > "${z}/mode" 2>/dev/null
+    done < "$DISABLED_LIST"
+    : > "$DISABLED_LIST" 2>/dev/null
 }
 
 unlock_ccl() {
@@ -262,7 +294,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.9 启动"
+log_me "$DEVICE_LABEL 统一模块 V7.0 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -294,7 +326,7 @@ HAS_CCL=0
 # 解析输入电流节点 (PPS 下 usb/current_now 恒为 0, 需用 PMIC IIO ADC)
 resolve_iin_node && log_me "* 输入电流节点: $IIN_NODE" || log_me "! 未找到 IIO 输入电流节点, 回退 usb/current_now"
 
-log_me "* 温区 ${zone_count} 个 | CCL=$([ "$HAS_CCL" = "1" ] && echo 支持 || echo 无) | 温控=$ENABLE_THERMAL_BYPASS | 日志=$ENABLE_CHARGE_LOG | 杀进程间隔=${KILL_INTERVAL}s"
+log_me "* 温区 ${zone_count} 个 | CCL=$([ "$HAS_CCL" = "1" ] && echo 支持 || echo 无) | 温控=$ENABLE_THERMAL_BYPASS | 温区模式=$( [ "$ZONE_MODE" = "1" ] && echo '禁用+伪装' || echo '仅伪装' ) | 杀进程=$([ "$KILL_THERMAL" = "1" ] && echo 开 || echo 关) | 日志=$ENABLE_CHARGE_LOG | 杀进程间隔=${KILL_INTERVAL}s"
 
 mkdir -p "$TMP_DIR" "$LOG_DIR" "$STATE_DIR" 2>/dev/null
 touch "$DISABLED_LIST" 2>/dev/null
@@ -302,8 +334,8 @@ touch "$DISABLED_LIST" 2>/dev/null
 if [ "$ENABLE_THERMAL_BYPASS" = "1" ]; then
     apply_thermal_bypass
     unlock_ccl
-    kill_thermal_services
-    log_me "* 温控绕过已激活"
+    [ "$KILL_THERMAL" = "1" ] && kill_thermal_services
+    log_me "* 温控绕过已激活 (温区模式=$ZONE_MODE)"
 fi
 
 prune_old_logs
@@ -319,7 +351,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.9"
+            echo "  模块版本:   V7.0 (温区模式 $ZONE_MODE)"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -352,7 +384,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.9"
+        echo "  模块版本:   V7.0 (温区模式 $ZONE_MODE)"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
@@ -525,8 +557,12 @@ while true; do
     fi
 
     if [ "$ENABLE_THERMAL_BYPASS" = "1" ]; then
-        # 温区禁用始终维持 (防 HAL 复位)
-        for z in $DISABLE_ZONES; do disable_zone_mode "$z"; done
+        # 温区禁用始终维持 (防 HAL 复位); ZONE_MODE=2 仅伪装不解禁
+        if [ "$ZONE_MODE" = "1" ]; then
+            for z in $DISABLE_ZONES; do disable_zone_mode "$z"; done
+        else
+            restore_zone_mode
+        fi
         if [ "$STATUS" = "Charging" ]; then
             # 充电中: 伪装温度 + 解锁CCL
             apply_fake_temps
@@ -535,10 +571,10 @@ while true; do
             # 未充电: 清除伪装温度, 恢复真实温度
             clear_fake_temps
         fi
-        # 温控进程限频杀, 避免频繁重启造成干扰
+        # 温控进程限频杀, 避免频繁重启造成干扰 (KILL_THERMAL=0 时交给平台自管)
         NOW_EPOCH=$(date +%s 2>/dev/null)
         [ -z "$NOW_EPOCH" ] && NOW_EPOCH=0
-        if [ $((NOW_EPOCH - LAST_KILL)) -ge "$KILL_INTERVAL" ] 2>/dev/null; then
+        if [ "$KILL_THERMAL" = "1" ] && [ $((NOW_EPOCH - LAST_KILL)) -ge "$KILL_INTERVAL" ] 2>/dev/null; then
             kill_thermal_services
             LAST_KILL=$NOW_EPOCH
         fi

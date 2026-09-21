@@ -37,6 +37,7 @@ v3() { awk "BEGIN{printf \"%.3f\", $1/1000000}" 2>/dev/null; }
 
 # 读取配置
 CFG_BYPASS=1; FAKE_CHG=25000; FAKE_BATT=28000; FAKE_USB=25000; FAKE_AP=30000
+CFG_ZONEMODE=1; CFG_KILLTHERM=1
 if [ -f "$MODDIR/config.prop" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         line=$(printf '%s' "$line" | tr -d '\r')
@@ -47,9 +48,13 @@ if [ -f "$MODDIR/config.prop" ]; then
             FAKE_TEMP_BATT) FAKE_BATT=${line#*=} ;;
             FAKE_TEMP_USB)  FAKE_USB=${line#*=} ;;
             FAKE_TEMP_AP)   FAKE_AP=${line#*=} ;;
+            ZONE_MODE)      CFG_ZONEMODE=${line#*=} ;;
+            KILL_THERMAL)   CFG_KILLTHERM=${line#*=} ;;
         esac
     done < "$MODDIR/config.prop"
 fi
+case "$CFG_ZONEMODE" in 1|2) ;; *) CFG_ZONEMODE=1 ;; esac
+case "$CFG_KILLTHERM" in 0|1) ;; *) CFG_KILLTHERM=1 ;; esac
 
 : > "$REPORT"
 
@@ -121,6 +126,8 @@ out "  service.d:  $([ -f /data/adb/service.d/y700_thermal_boost.sh ] && echo �
 MSU=$(ls /data/adb/modules_update/ 2>/dev/null | tr '\n' ' ')
 out "  待更新暂存: ${MSU:-无}"
 out "  温控开关:   ENABLE_THERMAL_BYPASS=$CFG_BYPASS"
+out "  温区模式:   ZONE_MODE=$CFG_ZONEMODE ($([ "$CFG_ZONEMODE" = "1" ] && echo '禁用温区+伪装' || echo '仅伪装, 保持 mode=enabled'))"
+out "  杀温控进程: KILL_THERMAL=$CFG_KILLTHERM ($([ "$CFG_KILLTHERM" = "1" ] && echo 开 || echo '关, 交给平台自管'))"
 out "  伪装温度:   CHG=$FAKE_CHG BATT=$FAKE_BATT USB=$FAKE_USB AP=$FAKE_AP (毫摄氏度)"
 out ""
 
@@ -176,7 +183,11 @@ for item in $CHECK; do
     FOUND_N=$((FOUND_N+1))
     m=$(zone_mode "$z"); tp=$(zone_temp "$z")
     if [ "$want" = "disable" ]; then
-        if [ "$m" = "disabled" ] && [ "$tp" = "$exp" ]; then r="正常(已禁用+伪装)"
+        if [ "$CFG_ZONEMODE" = "2" ]; then
+            # 仅伪装模式: 温区应保持 enabled, 只看温度是否伪装
+            if [ "$tp" = "$exp" ]; then r="正常(仅伪装, 未禁用)"
+            else r="温度未伪装(temp=$tp)"; BAD_N=$((BAD_N+1)); fi
+        elif [ "$m" = "disabled" ] && [ "$tp" = "$exp" ]; then r="正常(已禁用+伪装)"
         elif [ "$m" = "disabled" ]; then r="已禁用但温度未伪装"; BAD_N=$((BAD_N+1))
         elif [ "$tp" = "$exp" ]; then r="温度已伪装但mode未禁用"; BAD_N=$((BAD_N+1))
         else r="未生效"; BAD_N=$((BAD_N+1)); fi
@@ -214,7 +225,21 @@ if [ "$CFG_BYPASS" = "1" ]; then
     fi
     TZD=$(find_zone fast-chg-therm)
     if [ -n "$TZD" ]; then
-        echo "$(zone_mode "$TZD")" > "$TZD/mode" 2>/dev/null && out "  mode 可写: 是" || { out "  mode 可写: 否 !!"; add_problem "无法写入温区 mode, 禁用不可能生效"; }
+        # 必须写入「不同的值」并回读才能证明可写(写同值永远"成功")
+        CURM=$(zone_mode "$TZD")
+        if [ "$CURM" = "disabled" ]; then TVM=enabled; else TVM=disabled; fi
+        echo "$TVM" > "$TZD/mode" 2>/dev/null
+        sleep 1
+        RBM=$(zone_mode "$TZD")
+        if [ "$RBM" = "$TVM" ]; then
+            out "  mode 可写: 是 (写入 $TVM 生效)"
+        else
+            out "  mode 可写: 否 (写入 $TVM 后读回 $RBM) !!"
+            add_problem "无法写入温区 mode, 温区禁用不可能生效"
+        fi
+        # 恢复原值
+        echo "$CURM" > "$TZD/mode" 2>/dev/null
+        sleep 1
     fi
 else
     out "  温控绕过已关闭 (ENABLE_THERMAL_BYPASS=0), 跳过"
@@ -376,8 +401,10 @@ if [ "$DST" = "Charging" ] && [ "$IS_PPS" = "1" ] && [ "$CCL_LOW" = "0" ] && [ "
         out "       2) 充电器与设备协商出的 PPS 档位偏低"
         out "       3) 平台自身充电策略 (与本模块无关)"
         out "    建议: 换原装充电器 + 原装 C-to-C 线复测; 并做 A/B 对比"
-        out "          (config.prop 里 ENABLE_THERMAL_BYPASS=0 重启)"
-        add_problem "PD/PPS 下电池功率偏低(${BPW}W) 但模块各点正常 -> 瓶颈在充电器/线材或平台策略, 非本模块"
+        out "          1) config.prop 里 ENABLE_THERMAL_BYPASS=0 重启 -> 功率恢复则确认为模块副作用"
+        out "          2) 改为 ZONE_MODE=2 (仅伪装, 不禁用温区) 重启 -> 规避平台的保护性小电流回落"
+        out "          3) 再试 KILL_THERMAL=0 (不杀温控进程) -> 规避杀进程引发的充电策略异常"
+        add_problem "PD/PPS 下电池功率偏低(${BPW}W) 但模块各点正常 -> 先按 A/B 排查(见上); 仍低则瓶颈在充电器/线材或平台策略, 非本模块"
     fi
 fi
 out ""

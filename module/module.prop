@@ -1,6 +1,6 @@
 id=y700_thermal_boost
 name=Y700 统一温控增强+充电日志
-version=V6.9
-versionCode=30
+version=V7.0
+versionCode=31
 author=酷安@妲你小己吧&Cursor
-description=[温控优化][亮屏快充增强][充电日志] V6.9: 输入功率校验收窄为仅PPS/PD生效。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
+description=[温控优化][亮屏快充增强][充电日志] V7.0: 新增 ZONE_MODE/KILL_THERMAL 兼容开关，修复部分四代/五代机型充电被锁10W。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
