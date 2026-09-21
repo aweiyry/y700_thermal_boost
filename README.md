@@ -6,6 +6,10 @@
 |------|------|
 | **模块** (`module/`) | 温控绕过 + 亮屏快充增强 + 充电日志 |
 | **App** (`app/`) | 实时充电可视化 + 每次充电自动存档（数据独立于模块日志） |
+| **诊断脚本** (`tools/y700_diag.sh`) | 一键检测模块全部作用点 + 动态监控，社区排障用 |
+
+> **最新版本**：[Release v7.0](https://github.com/aweiyry/y700_thermal_boost/releases/latest)
+> —— 含模块 zip、App apk，以及可直下的诊断脚本 [`y700_diag.sh`](https://github.com/aweiyry/y700_thermal_boost/releases/latest/download/y700_diag.sh)。
 
 ## 支持机型
 
@@ -197,6 +201,9 @@ su -c "sh /data/local/tmp/y700_diag.sh 120"
 │   └── module.prop         # 模块信息
 ├── tools/
 │   └── y700_diag.sh        # 一键诊断脚本 (社区排障用, 10 节检测 + 动态采样, Release 附件)
+├── docs/
+│   ├── release-notes/      # 各版本 Release 说明存档 (与 GitHub Release 内容一致)
+│   └── issues/             # 社区问题回复存档 (与 GitHub Issue 内容一致)
 ├── promo/                  # 宣传海报与生成脚本
 │   ├── poster_v6.4.png
 │   └── make_poster.ps1
