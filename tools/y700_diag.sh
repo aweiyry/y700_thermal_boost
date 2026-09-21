@@ -37,7 +37,7 @@ v3() { awk "BEGIN{printf \"%.3f\", $1/1000000}" 2>/dev/null; }
 
 # 读取配置
 CFG_BYPASS=1; FAKE_CHG=25000; FAKE_BATT=28000; FAKE_USB=25000; FAKE_AP=30000
-CFG_ZONEMODE=1; CFG_KILLTHERM=1
+CFG_ZONEMODE=1; CFG_KILLTHERM=0
 if [ -f "$MODDIR/config.prop" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         line=$(printf '%s' "$line" | tr -d '\r')
@@ -211,7 +211,7 @@ if [ "$CFG_BYPASS" = "1" ]; then
     if [ -n "$TZ" ]; then
         chmod 666 "$TZ/emul_temp" 2>/dev/null
         SAVE=$(zone_temp "$TZ")
-        echo "$FAKE_BATT" > "$TZ/emul_temp" 2>/dev/null
+        { echo "$FAKE_BATT" > "$TZ/emul_temp"; } 2>/dev/null
         sleep 1
         RB=$(zone_temp "$TZ")
         if [ "$RB" = "$FAKE_BATT" ]; then
@@ -221,24 +221,29 @@ if [ "$CFG_BYPASS" = "1" ]; then
             add_problem "emul_temp 写入无效 -> 温度伪装不可能生效(SELinux/权限)"
         fi
         # 恢复
-        echo "$SAVE" > "$TZ/emul_temp" 2>/dev/null
+        { echo "$SAVE" > "$TZ/emul_temp"; } 2>/dev/null
     fi
     TZD=$(find_zone fast-chg-therm)
     if [ -n "$TZD" ]; then
-        # 必须写入「不同的值」并回读才能证明可写(写同值永远"成功")
+        # 写「不同的值」并看写入是否被接受(被 SELinux 拒绝时返回非 0);
+        # 注意不能只靠回读判断: 若模块正在运行且 ZONE_MODE=1, 它每 5 秒会把温区重新置回 disabled
         CURM=$(zone_mode "$TZD")
         if [ "$CURM" = "disabled" ]; then TVM=enabled; else TVM=disabled; fi
-        echo "$TVM" > "$TZD/mode" 2>/dev/null
-        sleep 1
-        RBM=$(zone_mode "$TZD")
-        if [ "$RBM" = "$TVM" ]; then
-            out "  mode 可写: 是 (写入 $TVM 生效)"
+        if { echo "$TVM" > "$TZD/mode"; } 2>/dev/null; then
+            sleep 1
+            RBM=$(zone_mode "$TZD")
+            if [ "$RBM" = "$TVM" ]; then
+                out "  mode 可写: 是 (写入 $TVM 生效)"
+            else
+                out "  mode 可写: 是 (写入 $TVM 被接受, 回读 $RBM)"
+                [ "$CFG_ZONEMODE" = "1" ] && out "    (回读不一致属正常: 模块正在运行且 ZONE_MODE=1, 每 5 秒会把该温区重新置回 disabled)"
+            fi
         else
-            out "  mode 可写: 否 (写入 $TVM 后读回 $RBM) !!"
+            out "  mode 可写: 否 (写入被拒绝: SELinux/权限) !!"
             add_problem "无法写入温区 mode, 温区禁用不可能生效"
         fi
         # 恢复原值
-        echo "$CURM" > "$TZD/mode" 2>/dev/null
+        { echo "$CURM" > "$TZD/mode"; } 2>/dev/null
         sleep 1
     fi
 else
@@ -250,7 +255,7 @@ if [ -e "$CCLP" ] && [ -e "$CCLMAXP" ]; then
     out "  CCL 当前: $CC / 上限 $CM"
     if [ -n "$CM" ] && [ "$CM" -gt 0 ] 2>/dev/null; then
         if [ "$CC" = "$CM" ]; then TV=$((CM / 2)); else TV="$CM"; fi
-        echo "$TV" > "$CCLP" 2>/dev/null
+        { echo "$TV" > "$CCLP"; } 2>/dev/null
         sleep 1
         C2=$(cat "$CCLP" 2>/dev/null)
         if [ "$C2" = "$TV" ]; then
@@ -264,7 +269,7 @@ if [ -e "$CCLP" ] && [ -e "$CCLMAXP" ]; then
                 out "    但当前 CCL 已等于上限, 不影响本次充电"
             fi
         fi
-        [ -n "$CC" ] && echo "$CC" > "$CCLP" 2>/dev/null
+        [ -n "$CC" ] && { echo "$CC" > "$CCLP"; } 2>/dev/null
         sleep 1
         out "  CCL 已恢复: $(cat "$CCLP" 2>/dev/null)"
     fi
@@ -272,13 +277,36 @@ fi
 out ""
 
 # ============ 6. 温控进程 ============
-out "【6】温控进程 (模块按进程名通用匹配击杀)"
+out "【6】温控进程 (模块按 /proc 命令行扫描匹配击杀)"
+if [ "$CFG_KILLTHERM" = "1" ]; then
+    out "  模块配置: 周期击杀已开启 (KILL_THERMAL=1, 每 KILL_INTERVAL 秒一次)"
+    out "  注: 杀掉的进程会被 init 数秒内重新拉起, 故这里仍能看到它们属正常"
+else
+    out "  模块配置: 周期击杀已关闭 (KILL_THERMAL=0, 默认), 下列进程由平台自管"
+fi
 TP=$(ps -A -o PID,NAME 2>/dev/null | grep -i thermal)
 if [ -n "$TP" ]; then
     echo "$TP" | while read -r l; do out "  $l"; done
-    out "  (存在属正常: 被杀后 init 会重新拉起, 模块每 60 秒再杀一次)"
 else
-    out "  未发现温控进程 (已被杀掉或本机无)"
+    out "  ps 未列出温控进程"
+fi
+# 用 /proc 复核(模块就是用这个方式匹配的; ps 在模块上下文里列不出其他进程名)
+PN=0
+for q in /proc/[0-9]*; do
+    [ -r "$q/cmdline" ] || continue
+    c=$(cat "$q/cmdline" 2>/dev/null | tr '\0' ' ')
+    [ -n "$c" ] || continue
+    case "$c" in
+        *y700_thermal_boost*|*y700_diag*) continue ;;
+        *thermal*|*Thermal*) PN=$((PN + 1)) ;;
+    esac
+done
+out "  /proc 扫描命中温控进程: $PN 个 (模块的实际判定依据)"
+# 摘录模块运行日志里的杀温控记录
+RTLOG=/data/local/tmp/y700_thermal_boost/runtime.log
+if [ -f "$RTLOG" ]; then
+    out "  模块运行日志 (最近杀温控记录):"
+    grep -E "已杀|杀失败|周期杀|未匹配" "$RTLOG" 2>/dev/null | tail -5 | while read -r l; do out "    $l"; done
 fi
 out ""
 
@@ -403,7 +431,7 @@ if [ "$DST" = "Charging" ] && [ "$IS_PPS" = "1" ] && [ "$CCL_LOW" = "0" ] && [ "
         out "    建议: 换原装充电器 + 原装 C-to-C 线复测; 并做 A/B 对比"
         out "          1) config.prop 里 ENABLE_THERMAL_BYPASS=0 重启 -> 功率恢复则确认为模块副作用"
         out "          2) 改为 ZONE_MODE=2 (仅伪装, 不禁用温区) 重启 -> 规避平台的保护性小电流回落"
-        out "          3) 再试 KILL_THERMAL=0 (不杀温控进程) -> 规避杀进程引发的充电策略异常"
+        out "          3) 再试 KILL_THERMAL=1 (开启周期杀温控) 重启 -> 排除温控服务反复重启的干扰(V7.0 才真正生效)"
         add_problem "PD/PPS 下电池功率偏低(${BPW}W) 但模块各点正常 -> 先按 A/B 排查(见上); 仍低则瓶颈在充电器/线材或平台策略, 非本模块"
     fi
 fi

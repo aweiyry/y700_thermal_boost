@@ -44,9 +44,18 @@
 #       2 = 仅伪装温度, 保持温区 mode=enabled
 #     背景: 部分平台在温区被 disabled 后会回落到保护性小电流(实测约10W),
 #     此时改用「仅伪装」即可骗过温控又不触发该保护逻辑
-#   - KILL_THERMAL=0|1  是否击杀温控进程
-#       1 = 杀(默认)  0 = 不杀, 交给平台自管(杀进程可能触发充电策略异常)
+#   - KILL_THERMAL=0|1  是否周期击杀温控进程
+#       0 = 不杀(默认, 交给平台自管)  1 = 杀
+#   - 【重要修复】杀温控进程的实现原先用 `ps -A -o PID,NAME` 匹配进程名,
+#     但模块运行上下文里 ps 无法列出其他进程名(实测温控行数恒为 0),
+#     导致 V6.x 的「杀温控进程」一直是静默失效(等于没杀)。V7.0 改用
+#     /proc/<pid>/cmdline 扫描(与单实例检测同源), 现已实测可命中。
+#     因该功能直到本版才真正生效, 默认设为 0, 避免升级后行为被悄悄改变。
 #   - ZONE_MODE=2 时会把此前禁用的温区重新写回 enabled
+#   - 温区禁用清单改为按开机校验后重建(温区编号每次开机可能变化, 旧实现会
+#     残留上百条脏数据, 且每 5 秒对每温区 grep 一次)
+#   - 新增 runtime.log 运行日志(/data/local/tmp/y700_thermal_boost/runtime.log,
+#     保留最近 200 行): 记录启动参数、温区模式、杀温控动作, 便于事后排查
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -83,6 +92,7 @@ LOG_DIR="/sdcard/充电日志"
 TMP_DIR="/data/local/tmp/charging_data"
 STATE_DIR="/data/local/tmp/y700_thermal_boost"
 DISABLED_LIST="$STATE_DIR/disabled_zones.list"
+RUNTIME_LOG="$STATE_DIR/runtime.log"
 
 TEMP_PATH="/sys/class/power_supply/battery/temp"
 CURRENT_PATH="/sys/class/power_supply/battery/current_now"
@@ -132,8 +142,11 @@ LOG_KEEP_COUNT=30
 KILL_INTERVAL=60
 # 温区处理方式: 1=禁用+伪装(默认, 游戏性能最好)  2=仅伪装不禁用(部分平台需要, 兼容性更好)
 ZONE_MODE=1
-# 是否击杀温控进程: 1=杀(默认) 0=不杀(部分平台杀进程会导致充电策略异常)
-KILL_THERMAL=1
+# 是否周期击杀温控进程: 0=不杀(默认, 与 V6.x 实际行为一致) 1=杀
+# 注: V6.x 的实现依赖 ps 的 NAME 列, 在模块上下文里恒为空 -> 一直是静默失效(等于没杀)。
+#     V7.0 改用 /proc/<pid>/cmdline 扫描后才真正生效, 因此默认改为 0(不引入新变量),
+#     需要的人再显式开 1。
+KILL_THERMAL=0
 
 load_config() {
     [ -f "$MODDIR/config.prop" ] || return 0
@@ -162,6 +175,16 @@ case "$ZONE_MODE" in 1|2) ;; *) ZONE_MODE=1 ;; esac
 case "$KILL_THERMAL" in 0|1) ;; *) KILL_THERMAL=1 ;; esac
 
 log_me() { log -t "$LOG_TAG" "$1"; echo "$1"; }
+
+# 运行日志: log_me 走 logcat(会被刷掉), 这里落盘保留最近 200 行, 便于事后排查
+# (/data/local/tmp/y700_thermal_boost/runtime.log)
+rt_log() {
+    echo "$(date '+%m-%d %H:%M:%S') $1" >> "$RUNTIME_LOG" 2>/dev/null
+    _n=$(wc -l < "$RUNTIME_LOG" 2>/dev/null)
+    if [ -n "$_n" ] && [ "$_n" -gt 200 ] 2>/dev/null; then
+        tail -n 100 "$RUNTIME_LOG" > "${RUNTIME_LOG}.tmp" 2>/dev/null && mv "${RUNTIME_LOG}.tmp" "$RUNTIME_LOG" 2>/dev/null
+    fi
+}
 
 zone_valid() { [ -n "$1" ] && [ -d "$1" ]; }
 
@@ -198,11 +221,46 @@ get_charge_protocol() {
     esac
 }
 
+# 本机已禁用温区集合(内存, 避免每轮 grep 文件; 也能防止温区编号跨重启变化后残留脏数据)
+DISABLED_SET=""
+record_disabled() {
+    z=$1
+    case " $DISABLED_SET " in
+        *" $z "*) return 0 ;;
+    esac
+    DISABLED_SET="$DISABLED_SET $z"
+    DISABLED_N=$((DISABLED_N + 1))
+    echo "$z" >> "$DISABLED_LIST"
+}
+
 disable_zone_mode() {
     z=$1
     zone_valid "$z" || return 1
-    echo "disabled" > "${z}/mode" 2>/dev/null || return 1
-    grep -qxF "$z" "$DISABLED_LIST" 2>/dev/null || echo "$z" >> "$DISABLED_LIST"
+    # 注意: 重定向失败的错误不受行尾 2>/dev/null 管, 必须用 { } 2>/dev/null 包住
+    { echo "disabled" > "${z}/mode"; } 2>/dev/null || return 1
+    record_disabled "$z"
+}
+
+# 启动时载入禁用清单并清理: 只保留「仍存在且当前确实是 disabled」的温区
+# (温区编号每次开机都可能变化, 旧编号会指向别的温区 -> 必须校验后再用)
+load_disabled_list() {
+    DISABLED_SET=""
+    DISABLED_N=0
+    [ -f "$DISABLED_LIST" ] || return 0
+    _tmp="${DISABLED_LIST}.tmp"
+    : > "$_tmp" 2>/dev/null
+    while IFS= read -r _z; do
+        [ -n "$_z" ] || continue
+        zone_valid "$_z" || continue
+        [ "$(cat "${_z}/mode" 2>/dev/null)" = "disabled" ] || continue
+        case " $DISABLED_SET " in
+            *" $_z "*) continue ;;
+        esac
+        DISABLED_SET="$DISABLED_SET $_z"
+        DISABLED_N=$((DISABLED_N + 1))
+        echo "$_z" >> "$_tmp"
+    done < "$DISABLED_LIST"
+    mv "$_tmp" "$DISABLED_LIST" 2>/dev/null || : > "$DISABLED_LIST"
 }
 
 # 写入伪装温度/清除温度, 带写回验证+重试 (v=0 表示清除仿真)
@@ -212,7 +270,7 @@ write_emul() {
     chmod 666 "${z}/emul_temp" 2>/dev/null
     i=0
     while [ $i -lt 3 ]; do
-        echo "$v" > "${z}/emul_temp" 2>/dev/null
+        { echo "$v" > "${z}/emul_temp"; } 2>/dev/null
         r=$(cat "${z}/temp" 2>/dev/null)
         if [ "$v" = "0" ]; then
             [ -n "$r" ] && [ "$r" != "0" ] && return 0
@@ -248,13 +306,13 @@ apply_thermal_bypass() {
 
 # 恢复温区: ZONE_MODE=2 切回 1 时把之前禁用的温区重新启用
 restore_zone_mode() {
-    [ "$ZONE_MODE" = "1" ] && return 0
-    [ -f "$DISABLED_LIST" ] || return 0
-    while IFS= read -r z; do
-        [ -n "$z" ] || continue
+    [ -n "$DISABLED_SET" ] || return 0
+    for z in $DISABLED_SET; do
         zone_valid "$z" || continue
-        echo "enabled" > "${z}/mode" 2>/dev/null
-    done < "$DISABLED_LIST"
+        { echo "enabled" > "${z}/mode"; } 2>/dev/null
+    done
+    DISABLED_SET=""
+    DISABLED_N=0
     : > "$DISABLED_LIST" 2>/dev/null
 }
 
@@ -264,19 +322,38 @@ unlock_ccl() {
     # 仅在 µA 量级(ccl_max>100000, 如五代12400000)时解锁;
     # 三代TB321FU ccl_max=12 单位不同, 写入反而限流并引发PPS反复重协商, 跳过
     [ -n "$ccl_max" ] && [ "$ccl_max" -gt 100000 ] 2>/dev/null || return 0
-    echo "$ccl_max" > "$CCL_PATH" 2>/dev/null
+    { echo "$ccl_max" > "$CCL_PATH"; } 2>/dev/null
 }
 
 kill_thermal_services() {
     # 通用匹配: 兼容各机型/各代热服务命名
     #   Y700 五代: android.hardware.thermal-service.qti / thermal-engine-v2
     #   其他机型:  android.hardware.thermal-service@1.0 / thermal_hal / vendor.thermal-hal 等
-    # 注: 用 ps -o NAME 读取进程名(comm), 不依赖 ps 的 ARGS 列(其常被截断)
-    ps -A -o PID,NAME 2>/dev/null | while read -r _pid _name; do
-        case "$_name" in
-            *thermal*|*Thermal*) kill "$_pid" 2>/dev/null ;;
+    # 实现: 扫描 /proc/<pid>/cmdline (与单实例检测同源, 已验证在模块上下文可用);
+    #       不用 `ps` 的 NAME 列 —— 模块环境下 ps 输出不可靠, 曾导致本功能静默失效
+    # 注意: 必须排除自身(脚本路径含 y700_thermal_boost, 会被 *thermal* 误匹配)
+    _n=0
+    for p in /proc/[0-9]*; do
+        _pid=${p##*/}
+        [ "$_pid" = "$$" ] && continue
+        # 先判可读, 否则 tr 的重定向失败信息会打到 stderr(行尾 2>/dev/null 管不住)
+        [ -r "$p/cmdline" ] || continue
+        _cmd=$(cat "$p/cmdline" 2>/dev/null | tr '\0' ' ')
+        [ -n "$_cmd" ] || continue
+        case "$_cmd" in
+            *y700_thermal_boost*|*y700_diag*) continue ;;
+            *thermal*|*Thermal*) ;;
+            *) continue ;;
         esac
+        if kill "$_pid" 2>/dev/null; then
+            rt_log "  已杀温控进程: $_cmd (pid $_pid)"
+            _n=$((_n + 1))
+        else
+            rt_log "  杀失败(权限/上下文拦截): $_cmd (pid $_pid)"
+        fi
     done
+    [ "$_n" -eq 0 ] && rt_log "  未匹配到温控进程"
+    return 0
 }
 
 prune_old_logs() {
@@ -330,12 +407,15 @@ log_me "* 温区 ${zone_count} 个 | CCL=$([ "$HAS_CCL" = "1" ] && echo 支持 |
 
 mkdir -p "$TMP_DIR" "$LOG_DIR" "$STATE_DIR" 2>/dev/null
 touch "$DISABLED_LIST" 2>/dev/null
+load_disabled_list
+[ "$DISABLED_N" -gt 0 ] 2>/dev/null && log_me "* 已保留上次禁用的温区 $DISABLED_N 个 (校验有效)"
 
 if [ "$ENABLE_THERMAL_BYPASS" = "1" ]; then
     apply_thermal_bypass
     unlock_ccl
     [ "$KILL_THERMAL" = "1" ] && kill_thermal_services
     log_me "* 温控绕过已激活 (温区模式=$ZONE_MODE)"
+    rt_log "温控绕过已激活: 温区模式=$ZONE_MODE 本机禁用温区=$DISABLED_N 个 CCL支持=$HAS_CCL"
 fi
 
 prune_old_logs
@@ -473,6 +553,9 @@ mkdir -p "$STAGE_DIR"
 log_me "* 模块运行中"
 
 LAST_KILL=0
+KILL_DEBUG_ONCE=0
+rt_log "===== 启动: 模块 V7.0 pid=$$ 机型=$DEVICE_LABEL 温区模式=$ZONE_MODE 杀温控=$KILL_THERMAL 间隔=${KILL_INTERVAL}s ====="
+rt_log "环境: PATH=$PATH"
 while true; do
     STATUS=$(cat "$STATUS_PATH" 2>/dev/null)
     CAPACITY=$(cat "$CAPACITY_PATH" 2>/dev/null)
@@ -575,8 +658,12 @@ while true; do
         NOW_EPOCH=$(date +%s 2>/dev/null)
         [ -z "$NOW_EPOCH" ] && NOW_EPOCH=0
         if [ "$KILL_THERMAL" = "1" ] && [ $((NOW_EPOCH - LAST_KILL)) -ge "$KILL_INTERVAL" ] 2>/dev/null; then
+            rt_log "周期杀温控 (间隔 ${KILL_INTERVAL}s, now=$NOW_EPOCH)"
             kill_thermal_services
             LAST_KILL=$NOW_EPOCH
+        elif [ "$KILL_THERMAL" = "1" ] && [ "$KILL_DEBUG_ONCE" != "1" ]; then
+            KILL_DEBUG_ONCE=1
+            rt_log "! 杀温控条件未满足: KILL_THERMAL=$KILL_THERMAL now=$NOW_EPOCH last=$LAST_KILL 间隔=$KILL_INTERVAL"
         fi
     fi
 
