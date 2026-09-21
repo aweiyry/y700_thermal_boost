@@ -25,8 +25,17 @@ data class ChargeData(
     val isCharging: Boolean get() = status.equals("Charging", ignoreCase = true)
     val protocolLabel: String get() = mapProtocol(protocol)
 
-    /** 输入电流是否可读 (PPS 快充下 usb/current_now 恒为 0, 需用 PMIC IIO ADC) */
-    val inputReadable: Boolean get() = inputCurrentUa > 0
+    /**
+     * 输入电流/功率是否可信。
+     * PPS 快充下部分平台会返回极小的垃圾值(如 0.01A / 0.1W), 用能量守恒剔除:
+     * 充电时输入功率必然 >= 电池功率, 否则该读数无效。
+     */
+    val inputReadable: Boolean
+        get() {
+            if (inputCurrentUa <= 0) return false
+            if (batteryPowerW > 1.0 && inputPowerW < batteryPowerW * 0.5) return false
+            return true
+        }
 }
 
 fun mapProtocol(raw: String): String = when (raw.uppercase()) {

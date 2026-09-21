@@ -201,8 +201,13 @@ if [ -e "$CCLP" ] && [ -e "$CCLMAXP" ]; then
         if [ "$C2" = "$TV" ]; then
             out "  CCL 可写: 是 (写入 $TV 生效, 说明模块的解锁能起作用)"
         else
-            out "  CCL 可写: 否 —— 写入 $TV 后读回 $C2 (被平台改回, 模块解锁无效)"
-            add_problem "CCL 不可控: 平台自己管着充电电流上限, 模块的解锁无效"
+            out "  CCL 可写: 否 —— 写入 $TV 后读回 $C2 (平台自己管控充电电流上限)"
+            if [ -n "$CC" ] && [ -n "$CM" ] && [ "$CC" -lt "$CM" ] 2>/dev/null; then
+                out "    且当前 CCL($CC) 低于上限($CM) -> 模块无法解锁上去, 是限流原因之一"
+                add_problem "CCL 被平台压在 $CC(上限 $CM) 且模块无法解锁 -> 充电电流上不去"
+            else
+                out "    但当前 CCL 已等于上限, 因此不影响本次充电(无需处理)"
+            fi
         fi
         # 恢复原值
         [ -n "$CC" ] && echo "$CC" > "$CCLP" 2>/dev/null
@@ -248,27 +253,63 @@ out "  CCL 充电电流上限: $(awk "BEGIN{printf \"%.2f\", $DCCL/1000000}")A /
 out "  充电阶段:   $(cat $B/charge_type 2>/dev/null)"
 out ""
 out "  --- 充电限流分析 ---"
+IS_PPS=0
+case "$DPR" in *PPS*|PD*) IS_PPS=1 ;; esac
+
 # 电池温度
 if [ -n "$DBT" ] && [ "$DBT" -gt 400 ] 2>/dev/null; then
     out "  ⚠ 电池真实温度 ${DTC}C 偏高(>40C) -> 很可能触发充电温度保护(JEITA)而限流"
     out "    (模块只伪装 thermal 温区, 电池真实温度节点只读, 无法绕过)"
     add_problem "电池温度 ${DTC}C 偏高, 平台会因此主动降低充电电流(硬件保护, 模块绕不过)"
 fi
-# CCL 是否被压
+
+# CCL 是否被压 (只有真的低于上限才值得报警)
+CCL_LOW=0
 if [ -n "$DCCL" ] && [ -n "$DCCLM" ] && [ "$DCCLM" -gt 0 ] 2>/dev/null; then
     PCT=$((DCCL * 100 / DCCLM))
     if [ "$PCT" -lt 60 ]; then
+        CCL_LOW=1
         out "  ⚠ CCL 仅用到 ${PCT}% (${DCCL}/${DCCLM}) -> 电池充电电流被平台压着, 这是功率上不去的主因"
         add_problem "CCL 被压到 ${PCT}%(平台管控), 充电电流上不去"
     else
-        out "  √ CCL 未明显受限 (${PCT}%)"
+        out "  √ CCL 未受限 (${PCT}%) —— 不是充电电流的瓶颈"
     fi
 fi
-# 输入侧是否还有余量
-if [ -n "$DUI" ] && [ -n "$DILIM" ] && [ "$DILIM" -gt 0 ] 2>/dev/null; then
-    IPCT=$((DUI * 100 / DILIM))
-    if [ "$IPCT" -lt 60 ]; then
-        out "  ⚠ 输入电流只用到 ${IPCT}% (设备没向充电器多要) -> 瓶颈在设备端(电池侧/策略), 不是充电器不够"
+
+# 输入侧: PPS/PD 下输入电流节点不可读, 不能拿来算利用率(会误导)
+if [ "$IS_PPS" = "1" ]; then
+    out "  ※ 协议为 PD/PPS: 输入电流节点在本平台不可读(实测), 故不做输入侧利用率判断"
+else
+    if [ -n "$DUI" ] && [ -n "$DILIM" ] && [ "$DILIM" -gt 0 ] 2>/dev/null; then
+        IPCT=$((DUI * 100 / DILIM))
+        if [ "$IPCT" -lt 60 ]; then
+            out "  ⚠ 输入电流只用到 ${IPCT}% (设备没向充电器多要) -> 瓶颈在设备端, 不是充电器不够"
+        else
+            out "  √ 输入电流利用率 ${IPCT}%"
+        fi
+    fi
+fi
+
+# 功率偏低的综合判断
+BATT_CD_ST=$(cat /sys/class/thermal/cooling_device41/cur_state 2>/dev/null)
+if [ -z "$BATT_CD_ST" ]; then
+    for c in /sys/class/thermal/cooling_device*; do
+        [ "$(cat $c/type 2>/dev/null)" = "battery" ] && { BATT_CD_ST=$(cat $c/cur_state 2>/dev/null); break; }
+    done
+fi
+BATT_CD_ST=${BATT_CD_ST:-0}
+
+if [ "$DST" = "Charging" ] && [ "$CCL_LOW" = "0" ] && [ "$DBT" -le 400 ] 2>/dev/null && [ "$BATT_CD_ST" = "0" ]; then
+    LOW=$(awk "BEGIN{print ($BPW < 20) ? 1 : 0}" 2>/dev/null)
+    if [ "$LOW" = "1" ]; then
+        out "  ⚠ 电池功率仅 ${BPW}W, 但: CCL 已满值 / 电池温度正常 / 无温控限流"
+        out "    => 瓶颈不在模块(模块该做的都做到了)。可能原因:"
+        out "       1) 充电器或线材不给力 (非原装 / 非 C-to-C / 线材老化)"
+        out "       2) 充电器与设备协商出的 PPS 档位偏低"
+        out "       3) 平台自身的充电策略 (与本模块无关)"
+        out "    建议: 换原装充电器+原装 C-to-C 线复测; 并把 config.prop 里"
+        out "          ENABLE_THERMAL_BYPASS=0 重启后做 A/B 对比(排除模块因素)"
+        add_problem "电池功率偏低(${BPW}W) 但模块各作用点正常 -> 瓶颈在充电器/线材或平台策略, 非本模块; 建议换原装充电器+线做 A/B 对比"
     fi
 fi
 out ""
