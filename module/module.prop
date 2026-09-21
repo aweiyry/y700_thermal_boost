@@ -1,6 +1,6 @@
 id=y700_thermal_boost
 name=Y700 统一温控增强+充电日志
-version=V6.8
-versionCode=29
+version=V6.9
+versionCode=30
 author=酷安@妲你小己吧&Cursor
-description=[温控优化][亮屏快充增强][充电日志] V6.8: 输入功率增加合理性校验(剔除PPS垃圾读数)。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
+description=[温控优化][亮屏快充增强][充电日志] V6.9: 输入功率校验收窄为仅PPS/PD生效。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V6.8
+# Y700 Unified Thermal Boost + Charge Log - V6.9
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -35,7 +35,9 @@
 # V6.8 修复:
 #   - 输入功率增加「合理性校验」: 部分平台在 PPS 下返回极小垃圾值
 #     (如 17637µA -> 0.1W), 会被当成有效样本。现按能量守恒剔除
-#     (充电时输入功率必然 >= 电池功率), 无效时如实显示"不可读"
+# V6.9 修复:
+#   - 上述校验收窄为「仅对 PPS/PD 生效」: SDP/DCP 下节点可靠,
+#     避免电池读数尖峰把有效输入样本误剔除
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -260,7 +262,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V6.8 启动"
+log_me "$DEVICE_LABEL 统一模块 V6.9 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -317,7 +319,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V6.8"
+            echo "  模块版本:   V6.9"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -350,7 +352,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V6.8"
+        echo "  模块版本:   V6.9"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
@@ -485,13 +487,20 @@ while true; do
                 POWER_COUNT=$((POWER_COUNT + 1))
                 [ "$(echo "$POWER_W $POWER_PEAK" | awk '{print ($1>$2)}')" = "1" ] && POWER_PEAK=$POWER_W
             fi
-            # 输入功率合理性校验:
-            #   充电时输入功率必然 >= 电池功率(能量守恒); 若算出远小于电池功率,
-            #   说明该平台的输入电流节点返回的是垃圾值(PPS 下常见, 如 17637µA),
-            #   必须剔除, 否则会记录出"输入 0.1W"这种误导数据
+            # 输入功率合理性校验(仅对 PPS/PD 生效):
+            #   这两种模式下部分平台会返回极小垃圾值(如 17637µA -> 0.1W),
+            #   按能量守恒剔除(充电时输入功率必然 >= 电池功率)。
+            #   SDP/DCP 下节点可靠, 不做此校验(避免电池读数尖峰误剔除有效样本)
             IN_OK=0
             if [ -n "$IN_POWER_W" ] && [ "$IN_POWER_W" != "0.0" ]; then
-                IN_OK=$(awk "BEGIN{print ($IN_POWER_W > 1 && $IN_POWER_W >= $POWER_W * 0.5) ? 1 : 0}" 2>/dev/null)
+                case "$CHARGE_PROTOCOL" in
+                    *PPS*|PD*)
+                        IN_OK=$(awk "BEGIN{print ($IN_POWER_W >= $POWER_W * 0.5) ? 1 : 0}" 2>/dev/null)
+                        ;;
+                    *)
+                        IN_OK=1
+                        ;;
+                esac
             fi
             if [ "$IN_OK" = "1" ]; then
                 IN_SUM=$(echo "$IN_SUM $IN_POWER_W" | awk '{printf "%.1f", $1+$2}')
