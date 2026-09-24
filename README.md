@@ -50,7 +50,7 @@
 
 ### 配置
 
-修改 `/data/adb/modules/y700_thermal_boost/config.prop`（改后重启生效）：
+修改 `/data/adb/modules/y700_thermal_boost/config.prop`（**V7.1 起改完最多 5 秒自动生效，不用重启**）：
 
 ```
 ENABLE_THERMAL_BYPASS=1   # 温控绕过 (1=开 0=关)
@@ -169,6 +169,9 @@ su -c "sh /data/local/tmp/y700_diag.sh 120"
 
 ### 模块
 
+- **V7.1** — **配置热重载**：主循环每 5 秒重读 `config.prop`，改配置**不用重启**即可生效（`ZONE_MODE`/`ENABLE_THERMAL_BYPASS`/`KILL_THERMAL`/伪装温度/各间隔），
+  变更写入 `runtime.log`；关闭绕过时会**清除伪装温度 + 恢复温区 + 还原 CCL**（「关掉模块 = 回到原始状态」，便于 A/B）；
+  配置项增加**合法性校验**（写错的值回退默认值，不会把模块搞坏）；新增**深度定位脚本** `y700_full_diag.sh`（全节点 dump + 平台证据 + 自动 A/B）
 - **V7.0** — 新增**兼容性开关** `ZONE_MODE`（`1`=禁用温区+伪装 / `2`=仅伪装保持 `mode=enabled`，会把此前禁用的温区写回 `enabled`）
   与 `KILL_THERMAL`（周期击杀温控进程），解决**部分四代/五代机型充电被锁 10W**；
   **修复「杀温控进程」长期静默失效**——原实现用 `ps -A -o PID,NAME` 匹配进程名，而模块运行上下文里
@@ -212,7 +215,8 @@ su -c "sh /data/local/tmp/y700_diag.sh 120"
 │   ├── config.prop         # 用户配置
 │   └── module.prop         # 模块信息
 ├── tools/
-│   └── y700_diag.sh        # 一键诊断脚本 (社区排障用, 10 节检测 + 动态采样, Release 附件)
+│   ├── y700_diag.sh        # 一键诊断脚本 (10 节快照 + 动态采样, Release 附件)
+│   └── y700_full_diag.sh   # 深度定位脚本 (全节点 dump + 平台证据 + 自动 A/B, 无需重启)
 ├── docs/
 │   ├── release-notes/      # 各版本 Release 说明存档 (与 GitHub Release 内容一致)
 │   └── issues/             # 社区问题回复存档 (与 GitHub Issue 内容一致)
