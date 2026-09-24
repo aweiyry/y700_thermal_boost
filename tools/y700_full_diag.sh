@@ -32,7 +32,11 @@ CCLP="$B/charge_control_limit"
 CCLMAXP="$B/charge_control_limit_max"
 
 NOAB=0
-[ "$1" = "--no-ab" ] && NOAB=1
+SCREENTEST=0
+for a in "$@"; do
+    [ "$a" = "--no-ab" ] && NOAB=1
+    [ "$a" = "--screen-test" ] && SCREENTEST=1
+done
 
 PROBLEMS=""
 out() { echo "$1" >> "$REPORT"; echo "$1"; }
@@ -108,7 +112,10 @@ if [ -d "$MODDIR" ]; then
     grep -q "reload_config" "$MODDIR/service.sh" 2>/dev/null && HAVERELOAD=1
     out "  热重载支持: $([ $HAVERELOAD = 1 ] && echo '支持(V7.1+, 改配置无需重启)' || echo '不支持(仅 V7.0 及更早, A/B 需手动重启)')"
     out "  配置:"
-    grep -vE '^\s*$' "$CFG" 2>/dev/null | while read -r l; do out "    $l"; done
+    grep -v '^[[:space:]]*$' "$CFG" 2>/dev/null | while IFS= read -r l; do out "    $l"; done
+    if ! grep -q . "$CFG" 2>/dev/null; then
+        out "    (读不到 config.prop: 可能是 SELinux 拦截读取, 忽略即可)"
+    fi
 else
     out "  模块目录不存在 !!"
     add_problem "模块未安装"
@@ -160,16 +167,34 @@ DBV=$(cat $B/voltage_now 2>/dev/null); DBV=${DBV#-}; DBV=${DBV:-0}
 DBI=$(cat $B/current_now 2>/dev/null); DBI=${DBI#-}; DBI=${DBI:-0}
 BPW=$(pow "$DBV" "$DBI")
 out "  ────── 关键矛盾检查 ──────"
-out "  电池: ${BPW}W ($(v3 $DBV)V / $(v2 $DBI)A)"
-if [ -n "$DILIM" ] && [ "$DILIM" != "0" ]; then
-    ILW=$(awk "BEGIN{printf \"%.2f\", $DILIM*$DUV/1000000}" 2>/dev/null)
-    out "  usb/input_current_limit = $(v2 $DILIM)A -> 上限功率仅 ${ILW}W"
+out "  电池(模块口径): ${BPW}W ($(v3 $DBV)V / $(v2 $DBI)A)"
+out "  电池(电量计口径): power_now=$(cat $B/power_now 2>/dev/null) µW / power_avg=$(cat $B/power_avg 2>/dev/null) µW"
+out "  usb/input_current_limit = $DILIM (µA)"
+# 用可靠的电压源算"输入上限功率": usb 节点电压在 PPS 下常不可信, 优先用 ucsi/wireless
+IV=$DUV
+[ "${IV:-0}" -lt 3000000 ] 2>/dev/null && IV=$(cat /sys/class/power_supply/wireless/voltage_now 2>/dev/null)
+[ "${IV:-0}" -lt 3000000 ] 2>/dev/null && IV=""
+if [ -n "$DILIM" ] && [ "$DILIM" != "0" ] && [ -n "$IV" ]; then
+    ILW=$(awk "BEGIN{printf \"%.2f\", ($DILIM/1000000)*($IV/1000000)}" 2>/dev/null)
+    out "  按该上限推算的最大输入功率: ${ILW}W (用电压 $(v3 $IV)V)"
     NEED=$(awk "BEGIN{print ($ILW>0 && $BPW>0 && $BPW>($ILW*1.3)) ? 1 : 0}" 2>/dev/null)
     if [ "$NEED" = "1" ]; then
-        out "  ⚠ 电池实得 ${BPW}W 远高于该上限推算的 ${ILW}W"
-        out "    => 这个节点不是 PPS 通路上的真实限制(电荷泵走的是另一条路), 不能作为限流依据"
+        out "  ⚠ 电池实得 ${BPW}W 高于该上限推算的 ${ILW}W"
+        out "    => 这个节点不是真实限制(电荷泵走另一条路), 不能作为限流依据"
     fi
+    LOW=$(awk "BEGIN{print ($ILW>0 && $ILW<20) ? 1 : 0}" 2>/dev/null)
+    [ "$LOW" = "1" ] && out "    (该值明显偏低, 但平台实际可能不按它走 —— 第 7 节 T3 会实测它是否可写且有效)"
 fi
+# 充电器给的契约能力
+UCM=$(cat /sys/class/power_supply/usb/current_max 2>/dev/null)
+UVM=$(cat /sys/class/power_supply/usb/voltage_max 2>/dev/null)
+out "  usb: current_max=$UCM voltage_max=$UVM"
+for u in /sys/class/power_supply/ucsi-source-psy-*; do
+    [ -d "$u" ] || continue
+    on=$(cat "$u/online" 2>/dev/null)
+    [ "$on" = "1" ] || continue
+    out "  $(basename "$u"): CURRENT_MAX=$(cat "$u/current_max" 2>/dev/null) CURRENT_NOW=$(cat "$u/current_now" 2>/dev/null) VOLTAGE_NOW=$(cat "$u/voltage_now" 2>/dev/null) usb_type=$(cat "$u/usb_type" 2>/dev/null)"
+done
 out ""
 
 # ============ 4. 平台决策证据 ============
@@ -413,6 +438,110 @@ else
     fi
     out ""
     out "  (A/B 期间电量/温度会略有变化, 差值 <15% 视为噪声)"
+fi
+out ""
+
+# ============ 7.5 干预实验 (逐项尝试"解锁", 看谁能让功率上去) ============
+out "【7.5】干预实验 (每项限时施加, 事后自动撤销)"
+out "  目的: 既然 A/B 证明限流不在模块, 就逐个试平台侧的开关, 看哪个能放开电流。"
+DST2=$(cat $B/status 2>/dev/null)
+if [ "$DST2" != "Charging" ]; then
+    out "  当前未充电 -> 跳过"
+elif [ $NOAB = 1 ]; then
+    out "  已按 --no-ab 跳过"
+else
+    base_sum=$(measure BASE 20)
+    BASEV=$(echo "$base_sum" | cut -d'|' -f1)
+    out "  基线(未做任何干预): ${BASEV}W"
+    out ""
+
+    # --- T1 息屏 (联想部分机型亮屏会压充电电流) ---
+    if [ $SCREENTEST = 1 ]; then
+        out "  ── T1: 息屏充电 35 秒 (测亮屏限流) ──"
+        input keyevent 26 2>/dev/null
+        sleep 35
+        t1=$(measure T1 30)
+        input keyevent 26 2>/dev/null
+        input keyevent 224 2>/dev/null
+        T1V=$(echo "$t1" | cut -d'|' -f1)
+        out "    息屏平均功率: ${T1V}W (基线 ${BASEV}W)"
+        awk "BEGIN{exit !($T1V>$BASEV*1.25)}" 2>/dev/null && {
+            out "    ★★ 息屏后功率明显上升 -> 这台机器亮屏会限流, 息屏充就快"
+            add_problem "亮屏限流: 息屏 ${T1V}W vs 亮屏 ${BASEV}W; 想快充请息屏"
+        }
+    else
+        out "  ── T1: 息屏测试未启用 (会短暂黑屏; 需要时加参数 --screen-test) ──"
+    fi
+
+    # --- T2 ZUI 电池保养 / 智能充电 ---
+    out ""
+    out "  ── T2: 关闭 ZUI「电池保养/智能充电」相关设置 35 秒 ──"
+    BM=$(settings get global battery_maintenance_on 2>/dev/null)
+    ZE=$(settings get global zui_battery_extreme_enabled 2>/dev/null)
+    out "    当前值: battery_maintenance_on=$BM zui_battery_extreme_enabled=$ZE"
+    settings put global battery_maintenance_on 0 2>/dev/null
+    settings put global zui_battery_extreme_enabled 0 2>/dev/null
+    sleep 35
+    t2=$(measure T2 30)
+    T2V=$(echo "$t2" | cut -d'|' -f1)
+    out "    平均功率: ${T2V}W (基线 ${BASEV}W)"
+    awk "BEGIN{exit !($T2V>$BASEV*1.25)}" 2>/dev/null && {
+        out "    ★★ 关掉电池保养后功率明显上升 -> 元凶就是它! 去 设置→电池 里永久关掉"
+        add_problem "ZUI 电池保养/智能充电在限流(关掉后 ${BASEV}W -> ${T2V}W), 请在系统设置里关闭"
+    }
+    [ -n "$BM" ] && settings put global battery_maintenance_on "$BM" 2>/dev/null
+    [ -n "$ZE" ] && settings put global zui_battery_extreme_enabled "$ZE" 2>/dev/null
+    out "    (已还原设置: battery_maintenance_on=$BM zui_battery_extreme_enabled=$ZE)"
+
+    # --- T3 提高 USB 输入电流上限 ---
+    out ""
+    out "  ── T3: 把 usb/input_current_limit 写到 3A, 35 秒 ──"
+    ILO=$(cat $U/input_current_limit 2>/dev/null)
+    out "    原值: $ILO"
+    if { echo 3000000 > $U/input_current_limit; } 2>/dev/null; then
+        ILN=$(cat $U/input_current_limit 2>/dev/null)
+        out "    写入后读回: $ILN"
+        if [ "$ILN" = "3000000" ]; then
+            sleep 35
+            t3=$(measure T3 30)
+            T3V=$(echo "$t3" | cut -d'|' -f1)
+            out "    平均功率: ${T3V}W (基线 ${BASEV}W)"
+            awk "BEGIN{exit !($T3V>$BASEV*1.25)}" 2>/dev/null && {
+                out "    ★★ 提高输入电流上限后功率上升 -> 模块可以帮你解锁这一项!"
+                add_problem "提高 usb/input_current_limit 能解锁电流(${BASEV}W -> ${T3V}W), 可加入模块功能"
+            }
+        else
+            out "    写入没生效(被平台改回) -> 这一项不可用"
+        fi
+        [ -n "$ILO" ] && { echo "$ILO" > $U/input_current_limit; } 2>/dev/null
+        out "    (已还原为 $ILO)"
+    else
+        out "    写入被拒绝(SELinux/权限) -> 这一项不可用"
+    fi
+
+    # --- T4 提高 CCL ---
+    out ""
+    out "  ── T4: 把 charge_control_limit 写到上限, 35 秒 ──"
+    CCO=$(cat $CCLP 2>/dev/null); CCM=$(cat $CCLMAXP 2>/dev/null)
+    out "    当前 CCL=$CCO 上限=$CCM"
+    if [ "$CCO" != "$CCM" ]; then
+        if { echo "$CCM" > $CCLP; } 2>/dev/null; then
+            sleep 35
+            t4=$(measure T4 30)
+            T4V=$(echo "$t4" | cut -d'|' -f1)
+            out "    平均功率: ${T4V}W (基线 ${BASEV}W)"
+            awk "BEGIN{exit !($T4V>$BASEV*1.25)}" 2>/dev/null && {
+                out "    ★★ 解锁 CCL 后功率上升 -> 模块的 CCL 解锁在这台机器上有效"
+                add_problem "CCL 解锁有效(${BASEV}W -> ${T4V}W)"
+            }
+            [ -n "$CCO" ] && { echo "$CCO" > $CCLP; } 2>/dev/null
+            out "    (已还原为 $CCO)"
+        else
+            out "    写入被拒绝 -> 这一项不可用"
+        fi
+    else
+        out "    CCL 已经是上限, 无可解锁 -> 说明 CCL 不是瓶颈"
+    fi
 fi
 out ""
 

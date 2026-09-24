@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V7.1
+# Y700 Unified Thermal Boost + Charge Log - V7.2
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -63,32 +63,56 @@
 #   - 关闭绕过(ENABLE_THERMAL_BYPASS=0)时会清掉伪装温度、恢复被禁用的温区、
 #     并把 CCL 还原为解锁前的值, 保证「关掉模块 = 回到原始状态」
 #   - 配置项增加合法性校验(写错的值会被忽略并回退默认值, 不会把模块搞坏)
+# V7.2 修复:
+#   - 【单实例】原实现按「pid 更小者先启动」判断, pid 回绕后失效(实测四代上
+#     20:17 启动的 pid=21429 与 20:34 启动的 pid=2004 并存 -> 两实例同时运行)。
+#     改用 /proc/<pid>/stat 的 starttime(真实启动时刻)比较
+#   - 充电日志新增「开始屏幕」行(亮屏/息屏): 部分联想机型亮屏会压充电电流,
+#     记录下来便于对比"同样电量下息屏是否更快"
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
 
 # ---- 单实例保护 (KSU 与 service.d 会同时拉起, 只保留一个) ----
-# 不用锁文件(存在「创建后内容尚未写入就被读到空值」的竞态 + pid 复用问题),
-# 改为扫描 /proc 找同脚本实例, 并以 pid 大小仲裁: 只认比本进程更早启动(lower pid)的,
-# 早启动者胜出, 后来者退出。
+# 不用锁文件(存在「创建后内容尚未写入就被读到空值」的竞态 + pid 复用问题)。
+# V7.2 修复: 原实现用「pid 更小者胜出」判断先后, 但 pid 会回绕(实测四代上
+#   20:17 启动的 pid=21429 与 20:34 启动的 pid=2004 同时存在 -> 双双判定自己最新,
+#   结果两个实例并存)。现改为比较 /proc/<pid>/stat 的 starttime(进程启动时刻,
+#   单位 jiffies, 自开机计), 这才是真正可靠的"谁先启动"。
 PID_FILE="/data/local/tmp/y700_thermal_boost.pid"
+# 取进程启动时刻: /proc/<pid>/stat 第 22 字段; comm 可能含空格/括号, 先砍掉 ")" 之前
+proc_starttime() {
+    sed 's/.*) //' "$1/stat" 2>/dev/null | awk '{print $20}'
+}
 older_instance_running() {
+    _my=$(proc_starttime "/proc/$$")
+    [ -n "$_my" ] || return 1
     for p in /proc/[0-9]*; do
         _p=${p##*/}
         [ "$_p" = "$$" ] && continue
-        [ "$_p" -lt "$$" ] 2>/dev/null || continue
-        grep -qa "y700_thermal_boost/service.sh" "$p/cmdline" 2>/dev/null && return 0
+        grep -qa "y700_thermal_boost/service.sh" "$p/cmdline" 2>/dev/null || continue
+        _st=$(proc_starttime "$p")
+        [ -n "$_st" ] || continue
+        if [ "$_st" -lt "$_my" ] 2>/dev/null; then
+            OLDER_PID=$_p
+            return 0
+        fi
+        # 启动时刻相同(极端情况)时用 pid 兜底
+        if [ "$_st" = "$_my" ] && [ "$_p" -lt "$$" ] 2>/dev/null; then
+            OLDER_PID=$_p
+            return 0
+        fi
     done
     return 1
 }
 if older_instance_running; then
-    echo "y700_thermal_boost: 已有更早启动的实例, 退出"
+    echo "y700_thermal_boost: 已有更早启动的实例(pid $OLDER_PID), 退出"
     exit 0
 fi
 # 开机时两个实例几乎同时启动, 等 3 秒让对方的命令行可见后复查
 sleep 3
 if older_instance_running; then
-    echo "y700_thermal_boost: 检测到更早实例, 退出"
+    echo "y700_thermal_boost: 检测到更早实例(pid $OLDER_PID), 退出"
     exit 0
 fi
 echo $$ > "$PID_FILE" 2>/dev/null
@@ -431,7 +455,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V7.1 启动"
+log_me "$DEVICE_LABEL 统一模块 V7.2 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -494,7 +518,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V7.1 (温区模式 $ZONE_MODE)"
+            echo "  模块版本:   V7.2 (温区模式 $ZONE_MODE)"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -527,10 +551,11 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V7.1 (温区模式 $ZONE_MODE)"
+        echo "  模块版本:   V7.2 (温区模式 $ZONE_MODE)"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
+        echo "  开始屏幕:   ${SCREEN_AT_START:-未知}"
         echo "  开始时间:   $CHARGING_START_TIME"
         if [ "$final" = "1" ]; then
             echo "  结束时间:   $NOW"
@@ -617,7 +642,7 @@ log_me "* 模块运行中"
 
 LAST_KILL=0
 KILL_DEBUG_ONCE=0
-rt_log "===== 启动: 模块 V7.1 pid=$$ 机型=$DEVICE_LABEL 温区模式=$ZONE_MODE 杀温控=$KILL_THERMAL 间隔=${KILL_INTERVAL}s ====="
+rt_log "===== 启动: 模块 V7.2 pid=$$ 机型=$DEVICE_LABEL 温区模式=$ZONE_MODE 杀温控=$KILL_THERMAL 间隔=${KILL_INTERVAL}s ====="
 rt_log "环境: PATH=$PATH"
 while true; do
     # 配置热重载: 改了 config.prop 最多 5 秒生效, 不用重启
@@ -639,6 +664,14 @@ while true; do
         if [ "$STATUS" = "Charging" ] && [ "$PREV_STATUS" != "Charging" ]; then
             CHARGING_START_TIME="$NOW ($(date '+%Y-%m-%d %H:%M:%S'))"
             CHARGING_START_CAP="$CAPACITY"
+            # 记录开始充电时的屏幕状态: 部分联想机型亮屏会压充电电流, 便于事后对比
+            SCREEN_AT_START=$(dumpsys power 2>/dev/null | grep -m1 "mWakefulness=" | sed 's/.*mWakefulness=//' | awk '{print $1}')
+            case "$SCREEN_AT_START" in
+                Awake) SCREEN_AT_START="亮屏" ;;
+                Asleep) SCREEN_AT_START="息屏" ;;
+                Dozing) SCREEN_AT_START="休眠" ;;
+                *) SCREEN_AT_START="未知" ;;
+            esac
             CHARGING_LOG_FILE="$LOG_DIR/$(date '+%Y.%m.%d.%H.%M.%S').log"
             POWER_SUM=0; POWER_COUNT=0; POWER_PEAK=0
             TEMP_SUM=0; TEMP_COUNT=0; TEMP_PEAK=0

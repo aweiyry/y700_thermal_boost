@@ -1,6 +1,6 @@
 id=y700_thermal_boost
 name=Y700 统一温控增强+充电日志
-version=V7.1
-versionCode=32
+version=V7.2
+versionCode=33
 author=酷安@妲你小己吧&Cursor
-description=[温控优化][亮屏快充增强][充电日志] V7.1: 配置热重载(改配置不用重启)+ZONE_MODE兼容开关+修复杀温控进程静默失效。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
+description=[温控优化][亮屏快充增强][充电日志] V7.2: 修复pid回绕导致双实例; 深度定位脚本升级(全节点dump+平台证据+干预实验)。配置: /data/adb/modules/y700_thermal_boost/config.prop。制作测试不易，搬运请标明出处。
