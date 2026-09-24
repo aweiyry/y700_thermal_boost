@@ -306,7 +306,7 @@ out "  /proc 扫描命中温控进程: $PN 个 (模块的实际判定依据)"
 RTLOG=/data/local/tmp/y700_thermal_boost/runtime.log
 if [ -f "$RTLOG" ]; then
     out "  模块运行日志 (最近杀温控记录):"
-    grep -E "已杀|杀失败|周期杀|未匹配" "$RTLOG" 2>/dev/null | tail -5 | while read -r l; do out "    $l"; done
+    grep -E "已杀|杀失败|周期杀|未匹配|热重载" "$RTLOG" 2>/dev/null | tail -5 | while read -r l; do out "    $l"; done
 fi
 out ""
 
@@ -332,6 +332,33 @@ out "  协议:       $DPR"
 out "  电池:       $(v3 $DBV)V / $(v2 $DBI)A / ${DTC}C  => ${BPW}W"
 out "  输入:       $(v3 $DUV)V / $(v2 $DUI)A  => ${UPW}W"
 out "  输入电流上限: $(v2 $DILIM)A"
+# 输入电流上限的合理性: PD/PPS 下若真按这个上限走, 物理上不可能达到当前电池功率
+if [ "$DILIM" != "0" ] && [ "$BPW" != "0.0" ]; then
+    IMPL=$(awk "BEGIN{printf \"%.1f\", ($DUV>0)? ($BPW*1000000/($DUV*0.85)) : 0}" 2>/dev/null)
+    LIMUA=$(awk "BEGIN{printf \"%.0f\", $DILIM*1000000}" 2>/dev/null)
+    NEED=$(awk "BEGIN{print ($LIMUA>0 && $IMPL>$LIMUA) ? 1 : 0}" 2>/dev/null)
+    if [ "$NEED" = "1" ]; then
+        out "    (该上限与实测功率矛盾: 按 $DILIM A 上限 + $DUV V 输入最多约 $(awk "BEGIN{printf \"%.1f\", $DUV*$DILIM}" 2>/dev/null)W,"
+        out "     而电池实际已 ${BPW}W -> 说明此节点不是 PPS 通路上的真实限制, 不具备参考价值)"
+    fi
+fi
+# 输入电流上限可写性(必须写不同的值才说明得了问题)
+if [ -e $U/input_current_limit ] && [ "$DST" = "Charging" ]; then
+    ILCUR=$(cat $U/input_current_limit 2>/dev/null)
+    ILTV=$(awk "BEGIN{printf \"%.4f\", $ILCUR+0.01}" 2>/dev/null)
+    if { echo "$ILTV" > $U/input_current_limit; } 2>/dev/null; then
+        sleep 1
+        ILRB=$(cat $U/input_current_limit 2>/dev/null)
+        if [ "$ILRB" = "$ILTV" ]; then
+            out "  输入电流上限可写: 是 (写入 $ILTV 生效 -> 需要时可作为解锁手段)"
+        else
+            out "  输入电流上限可写: 否 (写入 $ILTV 后读回 $ILRB -> 平台自管)"
+        fi
+        { echo "$ILCUR" > $U/input_current_limit; } 2>/dev/null
+    else
+        out "  输入电流上限可写: 否 (写入被拒绝: SELinux/权限)"
+    fi
+fi
 out "  CCL 充电电流上限: $(v2 $DCCL)A / 上限 $(v2 $DCCLM)A"
 out "  充电阶段:   $(cat $B/charge_type 2>/dev/null)"
 out ""
@@ -370,6 +397,33 @@ if [ -d "$LDIR" ]; then
     LTMIN=$(stat -c %y "$LT" 2>/dev/null | cut -d: -f1-2)
     out "  当前时间: $NOWMIN"
     [ "$LN" -eq 0 ] && add_problem "充电日志目录为空 -> 模块的日志功能没在写"
+    # 历史充电峰值: 判断"这台机器到底有没有快充过"(区分平台削顶 vs 充电器/线材问题)
+    if [ "$LN" -gt 0 ]; then
+        out ""
+        out "  --- 最近几次充电的峰值功率 (来自模块日志) ---"
+        out "    开始电量  峰值功率  协议      充电时长"
+        HISTN=0
+        for f in $(ls -1t "$LDIR"/*.log 2>/dev/null | head -8); do
+            h_cap=$(grep -m1 "开始电量:" "$f" 2>/dev/null | sed 's/.*: *//')
+            h_pk=$(grep -m1 "电池峰值功率:" "$f" 2>/dev/null | sed 's/.*: *//')
+            h_pr=$(grep -m1 "充电协议:" "$f" 2>/dev/null | sed 's/.*: *//')
+            h_du=$(grep -m1 -E "充电时长:" "$f" 2>/dev/null | sed 's/.*: *//')
+            [ -z "$h_pk" ] && continue
+            printf "    %-9s %-8s %-9s %s\n" "${h_cap:-?}" "$h_pk" "${h_pr:-?}" "${h_du:-进行中}" >> "$REPORT"
+            printf "    %-9s %-8s %-9s %s\n" "${h_cap:-?}" "$h_pk" "${h_pr:-?}" "${h_du:-进行中}"
+            HISTN=$((HISTN + 1))
+        done
+        if [ "$HISTN" -gt 0 ]; then
+            HPK=$(for f in $(ls -1t "$LDIR"/*.log 2>/dev/null | head -8); do grep -m1 "电池峰值功率:" "$f" 2>/dev/null | sed 's/.*: *//;s/W//'; done | sort -rn 2>/dev/null | head -1)
+            out "    历史最高峰值: ${HPK}W"
+            LOWPK=$(awk "BEGIN{print ($HPK < 20) ? 1 : 0}" 2>/dev/null)
+            if [ "$LOWPK" = "1" ]; then
+                add_problem "历史所有充电峰值都 <20W -> 这台机器在本模块下从未跑到过快充, 需要排查充电器/线材/平台策略"
+            else
+                out "    (存在 20W+ 记录 -> 机器本身能快充; 若当前功率低, 多半是电量/温度/充电器档位问题)"
+            fi
+        fi
+    fi
 else
     out "  目录不存在 !!"
     add_problem "充电日志目录 $LDIR 不存在 -> 日志功能异常"

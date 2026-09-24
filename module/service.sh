@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Y700 Unified Thermal Boost + Charge Log - V7.0
+# Y700 Unified Thermal Boost + Charge Log - V7.1
 # V5.7 修复:
 #   - 拔线后写0清除伪装温度, 恢复真实温度 (原版残留28度)
 #   - 温控进程限频杀 (KILL_INTERVAL, 默认60s), 消除每5秒重启循环
@@ -56,6 +56,13 @@
 #     残留上百条脏数据, 且每 5 秒对每温区 grep 一次)
 #   - 新增 runtime.log 运行日志(/data/local/tmp/y700_thermal_boost/runtime.log,
 #     保留最近 200 行): 记录启动参数、温区模式、杀温控动作, 便于事后排查
+# V7.1 新增:
+#   - 【配置热重载】主循环每轮重读 config.prop, 改配置最多 5 秒生效, 不用重启!
+#     切换 ZONE_MODE / ENABLE_THERMAL_BYPASS / KILL_THERMAL / 伪装温度 / 各间隔
+#     都会立即生效并写进 runtime.log; 远程协助做 A/B 对比时尤其省事
+#   - 关闭绕过(ENABLE_THERMAL_BYPASS=0)时会清掉伪装温度、恢复被禁用的温区、
+#     并把 CCL 还原为解锁前的值, 保证「关掉模块 = 回到原始状态」
+#   - 配置项增加合法性校验(写错的值会被忽略并回退默认值, 不会把模块搞坏)
 # 温区命名: 五代/四代=batt-pack-therm/batt2-pack-therm; 三代=batt1-therm/batt2-therm
 
 [ -z "$MODDIR" ] && MODDIR="/data/adb/modules/y700_thermal_boost"
@@ -131,22 +138,25 @@ read_input_current() {
     cat "$IN_CURRENT_PATH" 2>/dev/null
 }
 
-ENABLE_THERMAL_BYPASS=1
-ENABLE_CHARGE_LOG=1
-SAMPLE_INTERVAL=5
-FAKE_TEMP_CHG=25000
-FAKE_TEMP_BATT=28000
-FAKE_TEMP_USB=25000
-FAKE_TEMP_AP=30000
-LOG_KEEP_COUNT=30
-KILL_INTERVAL=60
-# 温区处理方式: 1=禁用+伪装(默认, 游戏性能最好)  2=仅伪装不禁用(部分平台需要, 兼容性更好)
-ZONE_MODE=1
-# 是否周期击杀温控进程: 0=不杀(默认, 与 V6.x 实际行为一致) 1=杀
-# 注: V6.x 的实现依赖 ps 的 NAME 列, 在模块上下文里恒为空 -> 一直是静默失效(等于没杀)。
-#     V7.0 改用 /proc/<pid>/cmdline 扫描后才真正生效, 因此默认改为 0(不引入新变量),
-#     需要的人再显式开 1。
-KILL_THERMAL=0
+# ---- 配置: 默认值 / 读取 / 校验 / 热重载 (V7.1) ----
+# 热重载: 主循环每轮重读 config.prop, 改了配置最多 5 秒生效, 不用重启
+set_config_defaults() {
+    ENABLE_THERMAL_BYPASS=1
+    ENABLE_CHARGE_LOG=1
+    SAMPLE_INTERVAL=5
+    FAKE_TEMP_CHG=25000
+    FAKE_TEMP_BATT=28000
+    FAKE_TEMP_USB=25000
+    FAKE_TEMP_AP=30000
+    LOG_KEEP_COUNT=30
+    KILL_INTERVAL=60
+    # 温区处理方式: 1=禁用+伪装(默认, 游戏性能最好)  2=仅伪装不禁用(部分平台需要, 兼容性更好)
+    ZONE_MODE=1
+    # 是否周期击杀温控进程: 0=不杀(默认, 与 V6.x 实际行为一致) 1=杀
+    # 注: V6.x 的实现依赖 ps 的 NAME 列, 在模块上下文里恒为空 -> 一直是静默失效(等于没杀)。
+    #     V7.0 改用 /proc/<pid>/cmdline 扫描后才真正生效, 因此默认改为 0(不引入新变量)。
+    KILL_THERMAL=0
+}
 
 load_config() {
     [ -f "$MODDIR/config.prop" ] || return 0
@@ -163,16 +173,26 @@ load_config() {
     done < "$MODDIR/config.prop"
 }
 
-load_config
+# 参数合法性修正(热重载时也要跑, 防手滑写错把模块搞坏)
+validate_config() {
+    case "$KILL_INTERVAL" in ''|*[!0-9]*) KILL_INTERVAL=60 ;; esac
+    [ "$KILL_INTERVAL" -lt 5 ] 2>/dev/null && KILL_INTERVAL=5
+    case "$SAMPLE_INTERVAL" in ''|*[!0-9]*) SAMPLE_INTERVAL=5 ;; esac
+    [ "$SAMPLE_INTERVAL" -lt 1 ] 2>/dev/null && SAMPLE_INTERVAL=5
+    case "$ZONE_MODE" in 1|2) ;; *) ZONE_MODE=1 ;; esac
+    case "$KILL_THERMAL" in 0|1) ;; *) KILL_THERMAL=0 ;; esac
+    case "$ENABLE_THERMAL_BYPASS" in 0|1) ;; *) ENABLE_THERMAL_BYPASS=1 ;; esac
+    case "$ENABLE_CHARGE_LOG" in 0|1) ;; *) ENABLE_CHARGE_LOG=1 ;; esac
+    case "$LOG_KEEP_COUNT" in ''|*[!0-9]*) LOG_KEEP_COUNT=30 ;; esac
+    case "$FAKE_TEMP_CHG" in ''|*[!0-9]*) FAKE_TEMP_CHG=25000 ;; esac
+    case "$FAKE_TEMP_BATT" in ''|*[!0-9]*) FAKE_TEMP_BATT=28000 ;; esac
+    case "$FAKE_TEMP_USB" in ''|*[!0-9]*) FAKE_TEMP_USB=25000 ;; esac
+    case "$FAKE_TEMP_AP" in ''|*[!0-9]*) FAKE_TEMP_AP=30000 ;; esac
+}
 
-# 参数合法性修正
-case "$KILL_INTERVAL" in
-    ''|*[!0-9]*) KILL_INTERVAL=60 ;;
-esac
-[ "$KILL_INTERVAL" -lt 5 ] 2>/dev/null && KILL_INTERVAL=5
-[ "$SAMPLE_INTERVAL" -lt 1 ] 2>/dev/null && SAMPLE_INTERVAL=5
-case "$ZONE_MODE" in 1|2) ;; *) ZONE_MODE=1 ;; esac
-case "$KILL_THERMAL" in 0|1) ;; *) KILL_THERMAL=1 ;; esac
+set_config_defaults
+load_config
+validate_config
 
 log_me() { log -t "$LOG_TAG" "$1"; echo "$1"; }
 
@@ -364,6 +384,46 @@ prune_old_logs() {
     done
 }
 
+# ---- 配置热重载 (V7.1) ----
+# 主循环每轮调用: 重读 config.prop, 有变化就立刻按新配置收敛状态并写运行日志。
+# 目的: 改配置不用重启(远程协助时尤其重要), 也便于 A/B 对比
+reload_config() {
+    _ob=$ENABLE_THERMAL_BYPASS; _oz=$ZONE_MODE; _ok=$KILL_THERMAL
+    _of="$FAKE_TEMP_CHG|$FAKE_TEMP_BATT|$FAKE_TEMP_USB|$FAKE_TEMP_AP"
+    _ol="$LOG_KEEP_COUNT|$KILL_INTERVAL|$SAMPLE_INTERVAL|$ENABLE_CHARGE_LOG"
+    set_config_defaults
+    load_config
+    validate_config
+    _chg=0
+    [ "$_ob" != "$ENABLE_THERMAL_BYPASS" ] && _chg=1
+    [ "$_oz" != "$ZONE_MODE" ] && _chg=1
+    [ "$_ok" != "$KILL_THERMAL" ] && _chg=1
+    [ "$_of" != "$FAKE_TEMP_CHG|$FAKE_TEMP_BATT|$FAKE_TEMP_USB|$FAKE_TEMP_AP" ] && _chg=1
+    [ "$_ol" != "$LOG_KEEP_COUNT|$KILL_INTERVAL|$SAMPLE_INTERVAL|$ENABLE_CHARGE_LOG" ] && _chg=1
+    [ "$_chg" = "1" ] || return 0
+    rt_log "配置热重载: 温控=$_ob->$ENABLE_THERMAL_BYPASS 温区模式=$_oz->$ZONE_MODE 杀温控=$_ok->$KILL_THERMAL 伪装(CHG/BATT/USB/AP)=$FAKE_TEMP_CHG/$FAKE_TEMP_BATT/$FAKE_TEMP_USB/$FAKE_TEMP_AP 采样=${SAMPLE_INTERVAL}s 杀间隔=${KILL_INTERVAL}s 日志=$ENABLE_CHARGE_LOG"
+    # 立刻按新模式收敛
+    if [ "$ENABLE_THERMAL_BYPASS" != "1" ]; then
+        # 关掉绕过后必须把真实温度还给系统, 否则温控会一直看到伪装值
+        clear_fake_temps
+        restore_zone_mode
+        [ "$HAS_CCL" = "1" ] && { echo "$CCL_ORIG" > "$CCL_PATH"; } 2>/dev/null
+        rt_log "  -> 已关闭绕过: 伪装温度已清除, 温区已恢复"
+    elif [ "$ZONE_MODE" = "1" ]; then
+        for z in $DISABLE_ZONES; do disable_zone_mode "$z"; done
+        rt_log "  -> 温区模式=1: 已禁用温区 $DISABLED_N 个"
+    else
+        restore_zone_mode
+        rt_log "  -> 温区模式=2: 温区保持 enabled, 只做温度伪装"
+    fi
+    # 重新开启绕过后, 若正在充电立刻补一次伪装(不等下一轮)
+    if [ "$ENABLE_THERMAL_BYPASS" = "1" ] && [ "$(cat "$STATUS_PATH" 2>/dev/null)" = "Charging" ]; then
+        apply_fake_temps
+    fi
+    LAST_KILL=0
+    return 0
+}
+
 until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
 sleep 5
 
@@ -371,7 +431,7 @@ DEVICE_LABEL=$(detect_device_label)
 ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
 
 log_me "========================================"
-log_me "$DEVICE_LABEL 统一模块 V7.0 启动"
+log_me "$DEVICE_LABEL 统一模块 V7.1 启动"
 log_me "Android $ANDROID_VER"
 log_me "========================================"
 
@@ -398,7 +458,10 @@ for z in $ALL_ZONES; do zone_valid "$z" && zone_count=$((zone_count + 1)); done
 [ $zone_count -eq 0 ] && log_me "! 未找到温区，模块退出" && exit 1
 
 HAS_CCL=0
+CCL_ORIG=""
 [ -r "$CCL_MAX_PATH" ] && [ -e "$CCL_PATH" ] && HAS_CCL=1
+# 记录解锁前的 CCL 原值, 便于关闭绕过时还原
+[ "$HAS_CCL" = "1" ] && CCL_ORIG=$(cat "$CCL_PATH" 2>/dev/null)
 
 # 解析输入电流节点 (PPS 下 usb/current_now 恒为 0, 需用 PMIC IIO ADC)
 resolve_iin_node && log_me "* 输入电流节点: $IIN_NODE" || log_me "! 未找到 IIO 输入电流节点, 回退 usb/current_now"
@@ -431,7 +494,7 @@ flush_charging_log() {
             echo "=========================================="
             echo ""
             echo "【充电进行中】"
-            echo "  模块版本:   V7.0 (温区模式 $ZONE_MODE)"
+            echo "  模块版本:   V7.1 (温区模式 $ZONE_MODE)"
             echo "  设备:       $DEVICE_LABEL"
             echo "  充电协议:   $CHARGE_PROTOCOL"
             echo "  开始时间:   $CHARGING_START_TIME"
@@ -464,7 +527,7 @@ flush_charging_log() {
         else
             echo "【充电进行中】"
         fi
-        echo "  模块版本:   V7.0 (温区模式 $ZONE_MODE)"
+        echo "  模块版本:   V7.1 (温区模式 $ZONE_MODE)"
         echo "  设备:       $DEVICE_LABEL"
         echo "  充电协议:   $CHARGE_PROTOCOL"
         echo "  系统:       Android $ANDROID_VER"
@@ -554,9 +617,11 @@ log_me "* 模块运行中"
 
 LAST_KILL=0
 KILL_DEBUG_ONCE=0
-rt_log "===== 启动: 模块 V7.0 pid=$$ 机型=$DEVICE_LABEL 温区模式=$ZONE_MODE 杀温控=$KILL_THERMAL 间隔=${KILL_INTERVAL}s ====="
+rt_log "===== 启动: 模块 V7.1 pid=$$ 机型=$DEVICE_LABEL 温区模式=$ZONE_MODE 杀温控=$KILL_THERMAL 间隔=${KILL_INTERVAL}s ====="
 rt_log "环境: PATH=$PATH"
 while true; do
+    # 配置热重载: 改了 config.prop 最多 5 秒生效, 不用重启
+    reload_config
     STATUS=$(cat "$STATUS_PATH" 2>/dev/null)
     CAPACITY=$(cat "$CAPACITY_PATH" 2>/dev/null)
     CURRENT=$(cat "$CURRENT_PATH" 2>/dev/null)
