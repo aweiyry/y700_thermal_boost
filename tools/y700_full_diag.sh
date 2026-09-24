@@ -1,6 +1,8 @@
 #!/system/bin/sh
 # ============================================================
-#  Y700 温控模块 —— 深度定位测试 (配合模块 V7.1)
+#  Y700 温控模块 —— 深度定位测试 (配合模块 V7.2+)
+#  脚本版本 v3: 新增 A/B 每组「伪装命中」校验 + 充入速率(%/分),
+#               新增【7.5】干预实验(T1 息屏 / T2 ZUI电池保养 / T3 输入电流上限 / T4 CCL)
 #
 #  用途: 定位「模块明明全部生效, 充电却只有 ~10W」到底卡在哪一环
 #
@@ -233,6 +235,10 @@ out ""
 out "【5】温区与热源全景 (找出模块没覆盖、却可能参与限流的热源)"
 FAKE_CHG=$(getcfg FAKE_TEMP_CHG); FAKE_BATT=$(getcfg FAKE_TEMP_BATT)
 FAKE_USB=$(getcfg FAKE_TEMP_USB); FAKE_AP=$(getcfg FAKE_TEMP_AP)
+[ -z "$FAKE_CHG" ] && FAKE_CHG=25000
+[ -z "$FAKE_BATT" ] && FAKE_BATT=28000
+[ -z "$FAKE_USB" ] && FAKE_USB=25000
+[ -z "$FAKE_AP" ] && FAKE_AP=30000
 out "  伪装目标值: CHG=${FAKE_CHG:-?} BATT=${FAKE_BATT:-?} USB=${FAKE_USB:-?} AP=${FAKE_AP:-?} (毫摄氏度)"
 out ""
 out "  温区名称              mode      temp     是否被模块伪装"
@@ -303,11 +309,14 @@ fi
 out ""
 
 # ============ 7. 自动 A/B ============
-# 采样函数: $1=组名 $2=时长秒 ; 输出 "平均功率|峰值|最低|平均温度|平均CCL|平均输入电压"
+# 采样函数: $1=组名 $2=时长秒
+# 输出 "平均功率|峰值|最低|平均温度|平均CCL|充电速率(%/分)|伪装命中/样本数"
+# 注: 充入速率(%/分)是与电压/电流节点无关的硬指标, 不受本平台垃圾读数影响
 measure() {
     _g=$1; _d=$2
     _tmp="$ABDIR/_y700_ab_${_g}.txt"
     : > "$_tmp"
+    _cap0=$(cat $B/capacity 2>/dev/null)
     _t=0
     while [ "$_t" -lt "$_d" ]; do
         _bv=$(cat $B/voltage_now 2>/dev/null); _bv=${_bv#-}; _bv=${_bv:-0}
@@ -316,13 +325,25 @@ measure() {
         _cc=$(cat $CCLP 2>/dev/null); _cc=${_cc:-0}
         _uv=$(cat $U/voltage_now 2>/dev/null); _uv=${_uv#-}; _uv=${_uv:-0}
         _pw=$(awk "BEGIN{printf \"%.2f\", $_bv*$_bi/1e12}" 2>/dev/null)
-        echo "${_pw:-0} ${_bt:-0} ${_cc:-0} ${_uv:-0}" >> "$_tmp"
+        # 伪装是否维持(取 fast-chg-therm 做样本)
+        _fz=$(find_zone fast-chg-therm); _fk=0
+        [ -n "$_fz" ] && [ "$(ztemp "$_fz")" = "$FAKE_CHG" ] && _fk=1
+        echo "${_pw:-0} ${_bt:-0} ${_cc:-0} ${_uv:-0} ${_fk}" >> "$_tmp"
         _t=$((_t + 2))
         [ "$_t" -lt "$_d" ] && sleep 2
     done
-    awk '{n++; s+=$1; if($1>mx)mx=$1; if(mn==""||$1<mn)mn=$1; ts+=$2; cs+=$3; us+=$4}
-         END{ if(n==0){print "0|0|0|0|0|0"; exit}
-              printf "%.2f|%.2f|%.2f|%.1f|%.0f|%.2f", s/n, mx, mn, ts/n/10, cs/n, us/n/1000000 }' "$_tmp" 2>/dev/null
+    _cap1=$(cat $B/capacity 2>/dev/null)
+    _rate=$(awk "BEGIN{printf \"%.2f\", ($_cap1-$_cap0)/($_d/60)}" 2>/dev/null)
+    awk -v rate="${_rate:-0}" '{n++; s+=$1; if($1>mx)mx=$1; if(mn==""||$1<mn)mn=$1; ts+=$2; cs+=$3; us+=$4; fk+=$5}
+         END{ if(n==0){print "0|0|0|0|0|0|0/0"; exit}
+              printf "%.2f|%.2f|%.2f|%.1f|%.0f|%s|%d/%d", s/n, mx, mn, ts/n/10, cs/n, rate, fk, n }' "$_tmp" 2>/dev/null
+}
+
+# 统一的表格行输出: $1=前缀 $2=汇总串
+ab_row() {
+    _line=$(echo "$2" | awk -F'|' '{printf "%-9s %-7s %-7s %-8s %-8s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5, $6"%/min", $7}')
+    printf "  %-5s %s\n" "$1" "$_line" >> "$REPORT"
+    printf "  %-5s %s\n" "$1" "$_line"
 }
 
 show_state() {
@@ -373,8 +394,10 @@ else
     setcfg ZONE_MODE 2
     sleep 10
     show_state
-    HOTB=0; hot_ok enabled && HOTB=1
-    [ "$HOTB" = "0" ] && out "    ⚠ 温区仍是 disabled -> 热重载没生效(检查模块是否 V7.1+ 且进程在运行)"
+    HOTB=0
+    _hb=$(find_zone fast-chg-therm)
+    [ -n "$_hb" ] && [ "$(zmode "$_hb")" = "enabled" ] && [ "$(ztemp "$_hb")" = "$FAKE_CHG" ] && HOTB=1
+    [ "$HOTB" = "0" ] && out "    ⚠ B 组状态不符(应为 enabled + 伪装 $FAKE_CHG) -> 该组数据不可用"
     B_SUM=$(measure B 40)
 
     out ""
@@ -400,15 +423,14 @@ else
 
     out ""
     out "  ────── A/B 结果汇总 ──────"
-    out "  组别  配置                     平均功率  峰值   最低   平均温度  平均CCL"
-    printf "  A     基线(温控=%s 温区=%s)      %s\n" "$ORIG_BYPASS" "$ORIG_ZONE" "$(echo "$A_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')" >> "$REPORT"
-    printf "  A     基线(温控=%s 温区=%s)      %s\n" "$ORIG_BYPASS" "$ORIG_ZONE" "$(echo "$A_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')"
-    printf "  B     仅伪装(ZONE_MODE=2)       %s\n" "$(echo "$B_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')" >> "$REPORT"
-    printf "  B     仅伪装(ZONE_MODE=2)       %s\n" "$(echo "$B_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')"
-    printf "  C     模块全关(绕过=0)          %s\n" "$(echo "$C_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')" >> "$REPORT"
-    printf "  C     模块全关(绕过=0)          %s\n" "$(echo "$C_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')"
-    printf "  D     还原后                    %s\n" "$(echo "$D_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')" >> "$REPORT"
-    printf "  D     还原后                    %s\n" "$(echo "$D_SUM" | awk -F'|' '{printf "%-9s %-6s %-6s %-9s %s", $1"W", $2"W", $3"W", $4"C", $5}')"
+    out "  组别  平均功率  峰值    最低    平均温度  平均CCL   充入速率    伪装命中"
+    ab_row "A" "$A_SUM"
+    ab_row "B" "$B_SUM"
+    ab_row "C" "$C_SUM"
+    ab_row "D" "$D_SUM"
+    out "  (A=基线 温控=$ORIG_BYPASS 温区=$ORIG_ZONE | B=ZONE_MODE 2 | C=模块全关 | D=还原)"
+    out "  伪装命中 = 采样中 fast-chg-therm 仍为伪装值的次数/总次数; 若远小于总数,"
+    out "  说明该组其实没在伪装, 这组数据不可用(常见于热服务把 emul_temp 清掉的机型)"
 
     AV=$(echo "$A_SUM" | cut -d'|' -f1)
     BV=$(echo "$B_SUM" | cut -d'|' -f1)
